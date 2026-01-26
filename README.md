@@ -38,6 +38,7 @@ Estimates the **knee** joint angle.
 -   `run_vqf_olsson`: Calculates knee angle using VQF orientation and the estimated axis.
 -   `run_vqf_olsson_heading_correction`: Applies heading correction to the VQF+Olsson estimate (currently experimental/tuning).
 -   `run_opensense`: Loads and plots OpenSense results for comparison.
+-   `run_kf_gframe_with_auto_r`: Load data and calculate the RELATIVE IMU orientation and transfer to one aligned joint angle.
 
 ### 2. `run_estimation_ankle.py`
 Estimates the **ankle** joint angle.
@@ -61,6 +62,7 @@ python run_estimation_ankle.py
     -   `heading_correction`: Run Heading Correction (experimental).
     -   `opensense`: Run OpenSense comparison.
     -   `vqf_olsson_heading_correction`: Run VQF + Olsson + Heading Correction.
+    -   `kf_gframe`: Run Ive's method.
     -   `all`: Run all methods (default).
 -   `--no-plot`: Disable interactive plotting (plots are still saved to `plots/`).
 
