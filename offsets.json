@@ -2,5 +2,8 @@
   "kf_gframe_Subject02_knee_angle_r": -8583,
   "vqf+olsson_Subject02_knee_angle_r": -9411,
   "vqf+olsson+heading_correction_Subject02_knee_angle_r": 9473,
-  "VQF-OpenSim_Subject02_knee_angle_r": 566
+  "VQF-OpenSim_Subject02_knee_angle_r": 566,
+  "kf_gframe_Subject08_knee_angle_r": -2005,
+  "vqf+olsson_Subject08_knee_angle_r": -2004,
+  "vqf+olsson+heading_correction_Subject08_knee_angle_r": -2002
 }

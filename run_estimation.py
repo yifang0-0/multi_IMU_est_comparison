@@ -14,11 +14,11 @@ from pathlib import Path
 
 from utils import (
     load_imu_data, get_sensor_mappings,
-    estimate_orientations, find_best_shift, align_signals,
+    find_best_shift, align_signals,
     load_opensense_results, find_vqf_opensim_file, load_offset, save_offset
 )
 from methods.shared import load_mot, calculate_joint_angle
-from methods import run_vqf_olsson, run_heading_correction, run_kf_gframe
+from methods import run_vqf_olsson, run_vqf_olsson_heading_corrected, run_kf_gframe
 from plotting import plot_time_series_error, plot_error_comparison
 
 
@@ -95,8 +95,6 @@ def prepare_data(joint_name, subject_id='Subject08'):
     gt_df = load_mot(subject_path / 'Mocap' / 'ikResults' / 'walking_IK.mot')
 
     return {
-        'q_prox': estimate_orientations(acc_prox, gyr_prox, fs),
-        'q_dist': estimate_orientations(acc_dist, gyr_dist, fs),
         'acc_prox': acc_prox,
         'gyr_prox': gyr_prox,
         'acc_dist': acc_dist,
@@ -112,13 +110,13 @@ def prepare_data(joint_name, subject_id='Subject08'):
 def process_vqf_olsson(data, errors_dict):
     """Run VQF+Olsson and add errors to dict."""
     print("\n=== VQF+Olsson Joint Axis Estimation ===")
-    angle_deg, jhat_prox, _ = run_vqf_olsson(
-        data['q_prox'], data['q_dist'],
-        data['acc_prox'], data['acc_dist'],
-        data['gyr_prox'], data['gyr_dist']
+    angle_deg, jhat_prox, _, q_rel, _, _ = run_vqf_olsson(
+        data['acc_prox'], data['gyr_prox'],
+        data['acc_dist'], data['gyr_dist'],
+        data['fs']
     )
     # Pick axis sign with better correlation
-    angle_neg = calculate_joint_angle(data['q_prox'], data['q_dist'], -jhat_prox)
+    angle_neg = calculate_joint_angle(q_rel, -jhat_prox)
     gt = data['gt']
     n = min(len(angle_deg), len(gt))
     if abs(np.corrcoef(angle_neg[:n], gt[:n])[0, 1]) > abs(np.corrcoef(angle_deg[:n], gt[:n])[0, 1]):
@@ -126,11 +124,11 @@ def process_vqf_olsson(data, errors_dict):
     _eval_and_store('vqf+olsson', angle_deg, gt, errors_dict, data)
 
 
-def process_heading_correction(data, errors_dict):
+def process_vqf_olsson_heading_correction(data, errors_dict):
     """Run VQF+Olsson+Heading Correction and add errors to dict."""
     print("\n=== VQF+Olsson+Heading Correction ===")
-    angle_deg = run_heading_correction(
-        data['gyr_prox'], data['acc_prox'], data['gyr_dist'], data['acc_dist'], data['fs']
+    angle_deg = run_vqf_olsson_heading_corrected(
+        data['acc_prox'], data['gyr_prox'], data['acc_dist'], data['gyr_dist'], data['fs']
     )
     _eval_and_store('vqf+olsson+heading_correction', angle_deg, data['gt'], errors_dict, data)
 
@@ -185,7 +183,7 @@ def main():
     parser.add_argument('--joint', type=str, default='knee', choices=['knee', 'ankle'],
                         help='Joint to estimate (default: knee)')
     parser.add_argument('--method', type=str, default='all',
-                        choices=['vqf_olsson', 'heading_correction', 'vqf_olsson_heading_correction',
+                        choices=['vqf_olsson', 'vqf_olsson_heading_correction',
                                  'opensense', 'kf_gframe', 'vqf_opensim', 'all'],
                         help='Estimation method (default: all)')
     parser.add_argument('--subject', type=str, default='Subject08',
@@ -208,8 +206,8 @@ def main():
     if args.method in ('vqf_olsson', 'all'):
         process_vqf_olsson(data, errors_dict)
 
-    if args.method in ('heading_correction', 'vqf_olsson_heading_correction', 'all'):
-        process_heading_correction(data, errors_dict)
+    if args.method in ('vqf_olsson_heading_correction', 'all'):
+        process_vqf_olsson_heading_correction(data, errors_dict)
 
     if args.method in ('opensense', 'all'):
         process_opensense(data, errors_dict)

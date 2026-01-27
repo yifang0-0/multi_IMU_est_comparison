@@ -59,9 +59,8 @@ python run_estimation_ankle.py
 **Options:**
 -   `--method`: Choose the estimation method.
     -   `vqf_olsson`: Run VQF + Olsson.
-    -   `heading_correction`: Run Heading Correction (experimental).
+    -   `vqf_olsson_heading_correction`: Run VQF + Olsson + Heading Correction (experimental).
     -   `opensense`: Run OpenSense comparison.
-    -   `vqf_olsson_heading_correction`: Run VQF + Olsson + Heading Correction.
     -   `kf_gframe`: Run Ive's method.
     -   `all`: Run all methods (default).
 -   `--no-plot`: Disable interactive plotting (plots are still saved to `plots/`).
@@ -77,7 +76,7 @@ python run_estimation_ankle.py --no-plot
 
 ## Current Status & Known Issues
 
--   **Heading Correction**: The `heading_correction` method is implemented but may require parameter tuning (`tauDelta`, `tauBias`) for optimal performance. It currently might show over-correction or drift in some cases.
+-   **Heading Correction**: The `vqf_olsson_heading_correction` method is implemented but may require parameter tuning (`tauDelta`, `tauBias`) for optimal performance. It currently might show over-correction or drift in some cases.
 -   **Olsson Method**: The joint axis estimation (Olsson) is working but performance depends on the quality of the motion data (excitation).
     -   **TODO**: The Olsson method currently does not perform well for the **ankle** joint. This needs further evaluation or a potential fix.
 -   **Synchronization**: There is an unknown time offset between the IMU and Ground Truth (Mocap) data. Currently, a cross-correlation approach is used to align the signals, but a systematic synchronization method using timestamps is missing.
