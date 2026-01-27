@@ -1,8 +1,8 @@
 import numpy as np
-from GlobalParams import params
+from constants import FS, T, CUTOFF, GN
 from scipy.signal import butter, filtfilt, correlate
 
-def lowpass_filter(data, cutoff=params.CUTOFF, fs=100, order=4, axis_operate=0):
+def lowpass_filter(data, cutoff=CUTOFF, fs=FS, order=4, axis_operate=0):
     print("Applying lowpass filter with cutoff:", cutoff, "Hz")
     nyq = 0.5 * fs
     b, a = butter(order, cutoff / nyq, btype='low', analog=False)
@@ -47,12 +47,12 @@ def angular_acceleration_body(t_array, cycle=0.1, motion_type=3):
     return omega_dot.T
 
 
-def compute_r(acc1, acc2, gyr1, gyr2, q_lin_s1, q_lin_s2, N):
+def compute_r(acc1, acc2, gyr1, gyr2, q_lin_s1, q_lin_s2, N, fs=FS):
     A_list = []
     b_list = []
-    
-    dgyr1 = approx_derivative(gyr1, params.Fs)
-    dgyr2 = approx_derivative(gyr2, params.Fs)
+
+    dgyr1 = approx_derivative(gyr1, fs)
+    dgyr2 = approx_derivative(gyr2, fs)
     
     for i in range(N):
         R1 = quat2matrix(q_lin_s1[i, :])
@@ -475,34 +475,24 @@ def integrateGyr_differentT(gyr, q_1, time):
 
 
 
-def integrateGyr(gyr, q_1):
+def integrateGyr(gyr, q_1, dt=T):
     """
     Integrates gyroscope measurements to estimate orientation (quaternion).
 
     Args:
-        data: A numpy array of shape (N, 3) containing the gyroscope measurements (gyr).
+        gyr: A numpy array of shape (N, 3) containing the gyroscope measurements.
         q_1: Initial orientation quaternion.
-        params: The global parameters object containing 'T' (time step).
+        dt: Time step (defaults to T from constants).
 
     Returns:
         orientation: The estimated orientations (quaternions) after integration.
     """
-    # Extract global parameters from the params object
-    T = params["T"]
-    # Initialize the orientation array
     orientation = np.zeros((gyr.shape[0], 4))
-    
-    # Set the initial orientation
     orientation[0, :] = q_1
-    
-    # Loop over the gyro gyr and perform quaternion integration
+
     for i in range(1, gyr.shape[0]):
-        # Compute the quaternion for the current time step
-        orientation[i, :] = quatmultiply(orientation[i-1, :], EXPq((T / 2) * gyr[i-1, :]))
-        # print(i+1)
-        # print(np.round(orientation[i, :],4), "orientation")
-        # print(np.round(gyr[i, :],4), "gyr")
-    
+        orientation[i, :] = quatmultiply(orientation[i-1, :], EXPq((dt / 2) * gyr[i-1, :]))
+
     return orientation
 
 
@@ -561,15 +551,15 @@ def dLnkdr(R, K):
 def dAcc(q_lin):
     """
     Returns the derivative of the costAcc with respect to the state at time step 't'.
-    
+
     Parameters:
         q_lin: np.ndarray - 4-element quaternion
-    
+
     Returns:
         np.ndarray - 3x3 derivative matrix
     """
-    R = quat2matrix(q_lin)  # Convert quaternion to rotation matrix
-    return crossM(R.T @ params.gn)
+    R = quat2matrix(q_lin)
+    return crossM(R.T @ GN)
 
 
 def dInit_etaG(q_1, q_lin):
@@ -640,69 +630,54 @@ def dInit(q_1, q_lin):
 #     return qR
 
 
-def dMotion_tp1_etaG(q_lin_tp1, q_lin_t):
+def dMotion_tp1_etaG(q_lin_tp1, q_lin_t, dt=T):
     """
     Returns the derivative of the costMotion with respect to the state at timestep 't'.
     tutorial 4.14 b
     """
-    T = params.T   # Extract the time duration from the global parameters
-
-    return (1/T) * dlogdq() @ quatL(quatconj(q_lin_t)) @ quatR(q_lin_tp1)  @ dexpndn()
-    # return with shape (3, 3) 
+    return (1/dt) * dlogdq() @ quatL(quatconj(q_lin_t)) @ quatR(q_lin_tp1) @ dexpndn()
 
 
-def dMotion_t_etaG(q_lin_tp1, q_lin_t):
+def dMotion_t_etaG(q_lin_tp1, q_lin_t, dt=T):
     """
     Computes the derivative of costMotion with respect to state at timestamp 't'.
-
     tutorial 4,14 c
     conjugate stating q(uv) = q(vu)^c
     """
-    T = params.T
-    return (1/T) * dlogdq() @ quatL(quatconj(q_lin_t)) @ quatR(q_lin_tp1) @ dexpnCdexpn() @ dexpndn()
+    return (1/dt) * dlogdq() @ quatL(quatconj(q_lin_t)) @ quatR(q_lin_tp1) @ dexpnCdexpn() @ dexpndn()
 
 
-def dMotion(q_lint, q_lintm1):
+def dMotion(q_lint, q_lintm1, dt=T):
     """
     Returns the derivative of the costMotion with respect to the state at timestep 't'.
 
     Parameters:
         q_lint: np.ndarray - Linearized quaternion at time step t (4-element vector)
         q_lintm1: np.ndarray - Linearized quaternion at time step t-1 (4-element vector)
-        T: float - Time duration (scalar)
+        dt: float - Time duration (defaults to T from constants)
 
     Returns:
-        np.ndarray - Derivative matrix (3x3 or appropriate shape based on context)
+        np.ndarray - Derivative matrix (3x3)
     """
-    T = params.T   # Extract the time duration from the global parameters
-    
-    # Define the quaternion operations
-    q_lintm1_conj = quatconj(q_lintm1)  # Conjugate of q_lintm1
-    q_mult = quatmultiply(q_lintm1_conj, q_lint)  # Multiply q_lintm1 conjugate with q_lint
-    
-    # Calculate the derivative
-    der = (1 / T) * dlogdq() @ quatL(q_mult) @ dexpndn()  # Matrix multiplication
-    
-    return der
-    # return with shape (3, 3) 
-    
+    q_lintm1_conj = quatconj(q_lintm1)
+    q_mult = quatmultiply(q_lintm1_conj, q_lint)
+    return (1 / dt) * dlogdq() @ quatL(q_mult) @ dexpndn()
 
-    
-def dMotiontm1(q_lint, q_lintm1):
+
+def dMotiontm1(q_lint, q_lintm1, dt=T):
     """
     Computes the derivative of costMotion with respect to state at timestamp 't-1'.
-    
+
     Parameters:
         q_lint: np.ndarray - Quaternion at time 't'
         q_lintm1: np.ndarray - Quaternion at time 't-1'
-    
+        dt: float - Time duration (defaults to T from constants)
+
     Returns:
-        np.ndarray - Computed derivative
+        np.ndarray - Computed derivative (3x3)
     """
-    T = params.T
-    q_rel = quatmultiply(quatconj(q_lintm1), q_lint)  # Relative quaternion
-    return (1/T) * dlogdq() @ quatR(q_rel) @ dexpnCdexpn() @ dexpndn()
-    # return with shape (3, 3) 
+    q_rel = quatmultiply(quatconj(q_lintm1), q_lint)
+    return (1/dt) * dlogdq() @ quatR(q_rel) @ dexpnCdexpn() @ dexpndn() 
     
     
 def quatnormalize(q):
@@ -808,21 +783,14 @@ def quatmultiply(q, r):
 
 
 
-def approx_derivative(y, Fs):
-    if params["if_lpf_dw"] is True:
-        print("y.shape:", y.shape )
+def approx_derivative(y, fs=FS, lpf_dw=False):
+    """Compute numerical derivative using 5-point central difference."""
+    if lpf_dw:
+        print("y.shape:", y.shape)
         print("apply the lowpass filter for calculating w derivatives")
         y = lowpass_filter(y.T).T
-    dy = np.zeros((3, y.shape[1]))  # Create a 1-row zero array with same column size as y
     dy = np.zeros_like(y)
-    dy[:, 2:-2] = (y[:, :-4] - 8 * y[:, 1:-3] + 8 * y[:, 3:-1] - y[:, 4:]) * (Fs / 12)
-    # # Forward difference at the start
-    # dy[:, 0] = np.ones_like(y[:,0])*20
-    # dy[:, 1] = ( -3*y[:,0] - 10*y[:,1] + 18*y[:,2] - 6*y[:,3] + y[:,4] ) * (Fs / 12)
-
-    # # Backward difference at the end
-    # dy[:, -2] = ( 3*y[:, -1] + 10*y[:, -2] - 18*y[:, -3] + 6*y[:, -4] - y[:, -5] ) * (Fs / 12)
-    # dy[:, -1] = ( 25*y[:, -1] - 48*y[:, -2] + 36*y[:, -3] - 16*y[:, -4] + 3*y[:, -5] ) * (Fs / 12)
+    dy[:, 2:-2] = (y[:, :-4] - 8 * y[:, 1:-3] + 8 * y[:, 3:-1] - y[:, 4:]) * (fs / 12)
     return dy
 
 def calc_acc_at_center(gyr, dgyr, acc, r):
