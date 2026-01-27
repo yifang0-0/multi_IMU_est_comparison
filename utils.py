@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from scipy.signal import correlate
 import qmt
 
 from methods.shared import load_mot
@@ -107,32 +108,40 @@ def estimate_orientations(acc, gyr, fs):
 # Signal Alignment
 # =============================================================================
 
-def find_best_shift(est_signal, gt_signal, max_shift_samples=10000):
-    """Find best time shift using cross-correlation."""
-    n = min(len(est_signal), len(gt_signal))
-    sig1 = est_signal[:n]
-    sig2 = gt_signal[:n]
+def find_best_shift(est_signal, gt_signal):
+    """Find where shorter signal best matches within longer signal using cross-correlation.
 
-    if np.std(sig1) == 0 or np.std(sig2) == 0 or np.isnan(sig1).any() or np.isnan(sig2).any():
+    Returns offset such that est_signal[offset:] aligns with gt_signal (or vice versa).
+    Positive offset means est_signal starts before gt_signal.
+    """
+    # Handle NaN/constant signals
+    if np.std(est_signal) == 0 or np.std(gt_signal) == 0:
+        return 0
+    if np.isnan(est_signal).any() or np.isnan(gt_signal).any():
         return 0
 
-    sig1_norm = (sig1 - np.mean(sig1)) / (np.std(sig1) + 1e-6)
-    sig2_norm = (sig2 - np.mean(sig2)) / (np.std(sig2) + 1e-6)
+    # Normalize both signals
+    sig1 = (est_signal - np.mean(est_signal)) / (np.std(est_signal) + 1e-6)
+    sig2 = (gt_signal - np.mean(gt_signal)) / (np.std(gt_signal) + 1e-6)
 
-    lags = np.arange(-max_shift_samples, max_shift_samples + 1)
-    corrs = []
-    for lag in lags:
-        if lag < 0:
-            c = np.corrcoef(sig1_norm[-lag:], sig2_norm[:lag])[0, 1]
-        elif lag > 0:
-            c = np.corrcoef(sig1_norm[:-lag], sig2_norm[lag:])[0, 1]
-        else:
-            c = np.corrcoef(sig1_norm, sig2_norm)[0, 1]
-        corrs.append(c)
+    # Ensure sig1 is the longer signal for consistent offset interpretation
+    if len(sig1) < len(sig2):
+        sig1, sig2 = sig2, sig1
+        swapped = True
+    else:
+        swapped = False
 
-    corrs = np.array(corrs)
-    max_idx = np.argmax(np.abs(corrs))
-    return lags[max_idx]
+    # Correlate: slides sig2 along sig1
+    # mode='valid' gives correlation at each position where sig2 fully overlaps sig1
+    # Result length: len(sig1) - len(sig2) + 1
+    corr = correlate(sig1, sig2, mode='valid')
+
+    best_offset = int(np.argmax(np.abs(corr)))
+
+    # Convert to lag convention (positive = est starts before gt)
+    if swapped:
+        return -best_offset
+    return best_offset
 
 
 def align_signals(est_signal, gt_signal, shift):
@@ -157,6 +166,11 @@ def calculate_rmse(estimated, ground_truth):
     """Calculate root mean squared error."""
     n = min(len(estimated), len(ground_truth))
     return np.sqrt(np.mean((ground_truth[:n] - estimated[:n])**2))
+
+
+def gyro_magnitude(gyr):
+    """Compute gyroscope magnitude, handling (3, N) or (N, 3) shapes."""
+    return np.linalg.norm(gyr, axis=0) if gyr.shape[0] == 3 else np.linalg.norm(gyr, axis=1)
 
 
 # =============================================================================

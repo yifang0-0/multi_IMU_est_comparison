@@ -138,7 +138,7 @@ def process_kf_gframe(data, errors_dict):
     print("\n=== KF_Gframe with Auto R ===")
     jc = data['joint_config']
     r1, r2 = jc.get('r1_default'), jc.get('r2_default')
-    angle_deg, r1_est, r2_est = run_kf_gframe(
+    angle_deg, r1_est, r2_est, _, _ = run_kf_gframe(
         data['acc_prox'], data['gyr_prox'], data['acc_dist'], data['gyr_dist'],
         data['fs'], r1=r1, r2=r2
     )

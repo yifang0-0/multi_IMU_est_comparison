@@ -4,3 +4,5 @@ matplotlib
 qmt
 requests
 tqdm
+seaborn
+scipy

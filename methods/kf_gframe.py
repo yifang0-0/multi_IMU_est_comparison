@@ -1,136 +1,133 @@
-"""Kalman filter with gravity frame constraints for dual-IMU joint angle estimation.
-
-This module contains the complete KF implementation including Jacobian computation.
-"""
+"""Kalman filter with gravity frame constraints for dual-IMU joint angle estimation."""
 import numpy as np
 import qmt
-from scipy.sparse import lil_matrix, csc_matrix
+from scipy.optimize import minimize
 
-from constants import FS, T as DT
+from constants import FS, T as DT, ACC_OUTLIER_THRESHOLD
 from calTools import (
-    integrateGyr, quatmultiply, quatconj, EXPq, LOGq,
-    quatR, quatL, quat2matrix, crossM, approx_derivative,
-    calc_acc_at_center, dMotion, dInit, dMotiontm1, dLnk,
-    dLnkdr, dLnk_etaG, dInit_etaG, dMotion_t_etaG, dMotion_tp1_etaG
+    integrateGyr, quatmultiply, EXPq, quat2matrix, crossM,
+    approx_derivative, calc_acc_at_center
 )
+from .shared import olsson_estimate_hinge_joint_axes, calculate_joint_angle
 
 
-# =============================================================================
-# Jacobian Computation Functions (from Jacob.py)
-# =============================================================================
-
-def calc_jac2(row_num, col_num, n, q_lin, q_1, cov_i, cov_w, cov_a, N):
-    """Calculation of Jacobian matrix block for one sensor (No link)."""
-    J = lil_matrix((row_num, col_num), dtype=np.float64)
-
-    for t in range(N):
-        if t == 0:
-            J[0:3, 0:3] = np.linalg.inv(cov_i) ** 0.5 @ dInit(q_1, q_lin[0])
-
-        if t > 0:
-            pos_wt1_r = 3 + (t - 1) * 3
-            pos_wt1_c = (t - 1) * 3
-            J[pos_wt1_r:pos_wt1_r+3, pos_wt1_c:pos_wt1_c+3] = (
-                np.linalg.inv(cov_w) ** 0.5 @ dMotiontm1(q_lin[t], q_lin[t-1])
-            )
-            J[pos_wt1_r:pos_wt1_r+3, pos_wt1_c+3:pos_wt1_c+6] = (
-                np.linalg.inv(cov_w) ** 0.5 @ dMotion(q_lin[t], q_lin[t-1])
-            )
-
-    return csc_matrix(J)
 
 
-def calc_jac2_etaG(row_num, col_num, n, q_lin, q_1, cov_i, cov_w, cov_a, N):
-    """Calculation of Jacobian matrix block for one sensor (eta-G parameterization)."""
-    J = lil_matrix((row_num, col_num), dtype=np.float64)
+def run_kf_gframe(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, r1=None, r2=None,
+                  cov_w_scale=1e-2, cov_lnk_scale=0.35**2 * 10,
+                  axis_mode='fixed', euler_axes='zyx',
+                  gt_angles=None, calib_samples=3000):
+    """Estimate joint angle using Kalman filter with gravity frame constraints.
 
-    for t in range(N):
-        if t == 0:
-            J[0:3, 0:3] = np.linalg.inv(cov_i) ** 0.5 @ dInit_etaG(q_1, q_lin[0])
+    Args:
+        acc_prox: Proximal IMU accelerometer data, shape (N, 3) or (3, N)
+        gyr_prox: Proximal IMU gyroscope data, shape (N, 3) or (3, N)
+        acc_dist: Distal IMU accelerometer data, shape (N, 3) or (3, N)
+        gyr_dist: Distal IMU gyroscope data, shape (N, 3) or (3, N)
+        fs: Sampling frequency in Hz
+        r1, r2: Lever arms. If None, auto-estimated from data.
+        cov_w_scale: Scale for process noise covariance (default: 1e-2).
+        cov_lnk_scale: Scale for measurement noise covariance (default: 0.35**2 * 10).
+        axis_mode: Joint axis estimation mode: 'fixed', 'olsson', or 'optimize'.
+        euler_axes: Euler angle extraction axes for 'fixed' mode (default: 'zyx').
+        gt_angles: Ground truth angles for 'optimize' mode (degrees).
+        calib_samples: Number of samples for axis optimization (default: 3000).
 
-        if t > 0:
-            pos_wt1_r = 3 + (t - 1) * 3
-            pos_wt1_c = (t - 1) * 3
-            J[pos_wt1_r:pos_wt1_r+3, pos_wt1_c:pos_wt1_c+3] = (
-                np.linalg.inv(cov_w) ** 0.5 @ dMotion_t_etaG(q_lin[t], q_lin[t-1])
-            )
-            J[pos_wt1_r:pos_wt1_r+3, pos_wt1_c+3:pos_wt1_c+6] = (
-                np.linalg.inv(cov_w) ** 0.5 @ dMotion_tp1_etaG(q_lin[t], q_lin[t-1])
-            )
+    Returns:
+        (angle_deg, r1, r2, jhat, q_rel): Joint angle in degrees, lever arms, axis vector, and relative quaternion.
+    """
+    # Ensure shape is (3, N) for KF processing
+    if acc_prox.shape[0] != 3:
+        acc1, gyr1 = acc_prox.T, gyr_prox.T
+        acc2, gyr2 = acc_dist.T, gyr_dist.T
+    else:
+        acc1, gyr1 = acc_prox, gyr_prox
+        acc2, gyr2 = acc_dist, gyr_dist
 
-    return csc_matrix(J)
+    # Estimate lever arms if not provided
+    if r1 is None or r2 is None:
+        r1, r2 = estimate_lever_arms(acc1, gyr1, acc2, gyr2, fs)
 
+    # Covariance matrices
+    cov_w = np.eye(6) * cov_w_scale
+    cov_lnk = np.eye(3) * cov_lnk_scale
 
-def calcJac_Link(m, n, q_lin_s1, q_lin_s2, AccG1, AccG2, cov_lnk, N):
-    """Calculation of Jacobian matrix block for the link part."""
-    J = lil_matrix((m, n))
+    # Run KF with explicit parameters
+    q1_all, q2_all, _ = process_orientation_KF_Gframe(
+        data={
+            'gyr_1': gyr1, 'gyr_2': gyr2,
+            'acc_1': acc1, 'acc_2': acc2,
+            'r1': r1, 'r2': r2
+        },
+        cov_w=cov_w,
+        cov_lnk=cov_lnk,
+    )
 
-    for t in range(N):
-        Rn1 = quat2matrix(q_lin_s1[t, :])
-        Rn2 = quat2matrix(q_lin_s2[t, :])
-        pos_link_r = t * 3
-        pos_link_c = t * 3
+    # Compute relative quaternion
+    q_rel = qmt.qmult(qmt.qinv(q1_all), q2_all)
 
-        J[pos_link_r:pos_link_r + 3, pos_link_c:pos_link_c + 3] = (
-            (np.linalg.inv(cov_lnk) ** 0.5) @ (-dLnk(Rn1, AccG1[:, t]))
-        )
-        J[pos_link_r:pos_link_r + 3, (3 * N) + pos_link_c:(3 * N) + pos_link_c + 3] = (
-            (np.linalg.inv(cov_lnk) ** 0.5) @ (dLnk(Rn2, AccG2[:, t]))
-        )
+    # Joint axis estimation based on mode
+    if axis_mode == 'fixed':
+        angle_deg = np.degrees(np.unwrap(qmt.eulerAngles(q_rel, axes=euler_axes)[:, 0]))
+        axis_map = {'zyx': [0, 0, 1], 'xyz': [1, 0, 0], 'yxz': [0, 1, 0],
+                    'zxy': [0, 0, 1], 'xzy': [1, 0, 0], 'yzx': [0, 1, 0]}
+        jhat = np.array(axis_map.get(euler_axes, [0, 0, 1]), dtype=float)
 
-    return csc_matrix(J)
+    elif axis_mode == 'olsson':
+        # Olsson expects shape (N, 3), so transpose from (3, N)
+        jhat, _ = olsson_estimate_hinge_joint_axes(acc1.T, acc2.T, gyr1.T, gyr2.T)
+        angle_deg = calculate_joint_angle(q_rel, jhat)
 
+    elif axis_mode == 'optimize':
+        if gt_angles is None:
+            raise ValueError("axis_mode='optimize' requires gt_angles")
+        jhat = _optimize_joint_axis(q_rel, gt_angles, calib_samples)
+        angle_deg = calculate_joint_angle(q_rel, jhat)
 
-def calcJac_Link_etaG(m, n, q_lin_s1, q_lin_s2, AccG1, AccG2, cov_lnk, N):
-    """Calculation of Jacobian matrix block for the link part (eta-G parameterization)."""
-    J = lil_matrix((m, n))
+    else:
+        raise ValueError(f"Unknown axis_mode: {axis_mode}")
 
-    for t in range(N):
-        Rn1 = quat2matrix(q_lin_s1[t, :])
-        Rn2 = quat2matrix(q_lin_s2[t, :])
-        pos_link_r = t * 3
-        pos_link_c = t * 3
-
-        J[pos_link_r:pos_link_r + 3, pos_link_c:pos_link_c + 3] = (
-            (np.linalg.inv(cov_lnk) ** 0.5) @ (-dLnk_etaG(Rn1, AccG1[:, t]))
-        )
-        J[pos_link_r:pos_link_r + 3, (3 * N) + pos_link_c:(3 * N) + pos_link_c + 3] = (
-            (np.linalg.inv(cov_lnk) ** 0.5) @ (dLnk_etaG(Rn2, AccG2[:, t]))
-        )
-
-    return J
-
-
-def calcJac_Link_r(m, n, q_lin_s1, q_lin_s2, gyr_1, gyr_2, cov_lnk, Fs, N):
-    """Calculation of Jacobian matrix block for lever arm optimization."""
-    J = lil_matrix((m, n))
-
-    dgyr_1 = approx_derivative(gyr_1, Fs)
-    dgyr_2 = approx_derivative(gyr_2, Fs)
-
-    for t in range(N):
-        Rn1 = quat2matrix(q_lin_s1[t, :])
-        Rn2 = quat2matrix(q_lin_s2[t, :])
-
-        C1 = crossM(gyr_1[:, t]) @ crossM(gyr_1[:, t]) + crossM(dgyr_1[:, t])
-        C2 = crossM(gyr_2[:, t]) @ crossM(gyr_2[:, t]) + crossM(dgyr_2[:, t])
-
-        pos_link_row = t * 3
-        pos_link_col = 0
-
-        J[pos_link_row:pos_link_row + 3, pos_link_col:pos_link_col + 3] = (
-            (np.linalg.inv(cov_lnk) ** 0.5) @ (-dLnkdr(Rn1, C1))
-        )
-        J[pos_link_row:pos_link_row + 3, pos_link_col+3:pos_link_col + 6] = (
-            (np.linalg.inv(cov_lnk) ** 0.5) @ (dLnkdr(Rn2, C2))
-        )
-
-    return J
+    return angle_deg, r1, r2, jhat, q_rel
 
 
-# =============================================================================
-# Extended Kalman Filter (from KF_Gframe.py)
-# =============================================================================
+def _optimize_joint_axis(q_rel, gt_angles, calib_samples):
+    """Find joint axis minimizing RMSE against ground truth."""
+    from utils import find_best_shift, align_signals  # Local import to avoid circular dependency
+
+    # First find time alignment using Euler angle estimate
+    angle_euler = np.degrees(np.unwrap(qmt.eulerAngles(q_rel, axes='zyx')[:, 0]))
+    offset = find_best_shift(angle_euler, gt_angles)
+    q_aligned, gt_aligned = align_signals(q_rel, gt_angles, offset)
+
+    n = min(calib_samples, len(gt_aligned), len(q_aligned))
+    q_calib, gt_calib = q_aligned[:n], gt_aligned[:n]
+
+    def spherical_to_cart(theta, phi):
+        return np.array([np.sin(theta)*np.cos(phi), np.sin(theta)*np.sin(phi), np.cos(theta)])
+
+    def objective(params):
+        jhat = spherical_to_cart(*params)
+        angle_est = calculate_joint_angle(q_calib, jhat)
+        return np.sqrt(np.mean((angle_est - gt_calib)**2))
+
+    # Multi-start optimization from X, Y, Z axis initializations
+    init_points = [(0.01, 0), (np.pi/2, 0), (np.pi/2, np.pi/2)]
+    best = min(
+        (minimize(objective, init, method='L-BFGS-B',
+                  bounds=[(0, np.pi), (-np.pi, np.pi)])
+         for init in init_points),
+        key=lambda r: r.fun
+    )
+    jhat = spherical_to_cart(*best.x)
+
+    # Sign check via correlation - pick sign with better correlation to GT
+    angle_pos = calculate_joint_angle(q_calib, jhat)
+    angle_neg = calculate_joint_angle(q_calib, -jhat)
+    if np.corrcoef(angle_neg, gt_calib)[0, 1] > np.corrcoef(angle_pos, gt_calib)[0, 1]:
+        jhat = -jhat
+
+    return jhat
+
 
 
 def estimate_lever_arms(acc1, gyr1, acc2, gyr2, fs, iterations=25, step=0.7):
@@ -232,11 +229,6 @@ def process_orientation_KF_Gframe(
     acc_1 = data['acc_1']
     acc_2 = data['acc_2']
 
-    print("T in KF_Gframe:", T)
-    print("N in KF_Gframe:", N)
-    print("cov_w in KF_Gframe:", cov_w)
-    print("cov_lnk in KF_Gframe:", cov_lnk)
-
     dgyr_1 = approx_derivative(gyr_1, FS)
     dgyr_2 = approx_derivative(gyr_2, FS)
 
@@ -277,10 +269,9 @@ def process_orientation_KF_Gframe(
         x_local[0:3, 0] = eta[0, 0:3]
         x_local[3:6, 0] = eta[1, 0:3]
 
-        if np.any(acc_1_t > 300) or np.any(acc_2_t > 300):
+        if np.any(acc_1_t > ACC_OUTLIER_THRESHOLD) or np.any(acc_2_t > ACC_OUTLIER_THRESHOLD):
             run_acc_inlimit = False
             num_rejected += 1
-            print(f"detected uncommon {t} acc_1_t, acc_2_t: ", acc_1_t, acc_2_t)
         else:
             run_acc_inlimit = True
 
@@ -309,26 +300,10 @@ def process_orientation_KF_Gframe(
 
         if run_measurement_update and run_acc_inlimit:
             H = np.zeros((3, 6))
-            try:
-                vec1 = quat2matrix(q_lin_s1_t) @ AccG1_t
-                vec2 = quat2matrix(q_lin_s2_t) @ AccG2_t
-                H[0:3, 0:3] = crossM(vec1)
-                H[0:3, 3:6] = -crossM(vec2)
-            except Exception as e:
-                print(f"\n!!! Error detected at sample t={t} !!!")
-                print(f"Error Type: {type(e).__name__}: {e}")
-                print("N: ", N)
-                print(f"DEBUG SHAPES:")
-                print(f"  AccG1_t: {AccG1_t.shape if hasattr(AccG1_t, 'shape') else 'no shape'}")
-                print(f"  q_lin_s1_t: {q_lin_s1_t.shape}")
-                print(f"  vec1 (result of @): {vec1.shape if 'vec1' in locals() else 'N/A'}")
-                print(f"DEBUG VALUES (NaN check):")
-                print(f"  AccG1_t has NaN: {np.isnan(AccG1_t).any() if hasattr(AccG1_t, 'shape') else 'N/A'}")
-                print(f"  AccG1_t content: {AccG1_t}")
-                print(f"RAW DATA at t={t}:")
-                print(f"  acc_1_t: {acc_1_t.flatten()}")
-                print(f"  gyr_1_t: {gyr_1_t.flatten()}")
-                raise e
+            vec1 = quat2matrix(q_lin_s1_t) @ AccG1_t
+            vec2 = quat2matrix(q_lin_s2_t) @ AccG2_t
+            H[0:3, 0:3] = crossM(vec1)
+            H[0:3, 3:6] = -crossM(vec2)
 
             e = (quat2matrix(q_lin_s1_t) @ AccG1_t) - (quat2matrix(q_lin_s2_t) @ AccG2_t)
 
@@ -349,57 +324,3 @@ def process_orientation_KF_Gframe(
 
     return orientation_s1, orientation_s2, P_list
 
-
-# =============================================================================
-# Public API
-# =============================================================================
-
-def run_kf_gframe(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, r1=None, r2=None,
-                  cov_w_scale=1e-2, cov_lnk_scale=0.35**2 * 10):
-    """Estimate joint angle using Kalman filter with gravity frame constraints.
-
-    Args:
-        acc_prox: Proximal IMU accelerometer data, shape (N, 3) or (3, N)
-        gyr_prox: Proximal IMU gyroscope data, shape (N, 3) or (3, N)
-        acc_dist: Distal IMU accelerometer data, shape (N, 3) or (3, N)
-        gyr_dist: Distal IMU gyroscope data, shape (N, 3) or (3, N)
-        fs: Sampling frequency in Hz
-        r1, r2: Lever arms. If None, auto-estimated from data.
-        cov_w_scale: Scale for process noise covariance (default: 1e-2).
-        cov_lnk_scale: Scale for measurement noise covariance (default: 0.35**2 * 10).
-
-    Returns:
-        (angle_deg, r1, r2): Joint angle in degrees and lever arm vectors
-    """
-    # Ensure shape is (3, N) for KF processing
-    if acc_prox.shape[0] != 3:
-        acc1, gyr1 = acc_prox.T, gyr_prox.T
-        acc2, gyr2 = acc_dist.T, gyr_dist.T
-    else:
-        acc1, gyr1 = acc_prox, gyr_prox
-        acc2, gyr2 = acc_dist, gyr_dist
-
-    # Estimate lever arms if not provided
-    if r1 is None or r2 is None:
-        r1, r2 = estimate_lever_arms(acc1, gyr1, acc2, gyr2, fs)
-
-    # Covariance matrices
-    cov_w = np.eye(6) * cov_w_scale
-    cov_lnk = np.eye(3) * cov_lnk_scale
-
-    # Run KF with explicit parameters
-    q1_all, q2_all, _ = process_orientation_KF_Gframe(
-        data={
-            'gyr_1': gyr1, 'gyr_2': gyr2,
-            'acc_1': acc1, 'acc_2': acc2,
-            'r1': r1, 'r2': r2
-        },
-        cov_w=cov_w,
-        cov_lnk=cov_lnk,
-    )
-
-    # Compute relative angle from quaternions
-    q_rel = qmt.qmult(qmt.qinv(q1_all), q2_all)
-    angle_deg = np.degrees(np.unwrap(qmt.eulerAngles(q_rel, axes='zyx')[:, 0]))
-
-    return angle_deg, r1, r2
