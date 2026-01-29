@@ -40,10 +40,22 @@ def load_imu_data(file_path):
     return df
 
 
+def _remove_nested_xml_comments(xml_str):
+    """Remove XML comment blocks that contain nested comments."""
+    import re
+    while True:
+        match = re.search(r'<!--(?:(?!-->).)*?<!--.*?-->', xml_str, re.DOTALL)
+        if not match:
+            break
+        xml_str = xml_str[:match.start()] + xml_str[match.end():]
+    return xml_str
+
+
 def get_sensor_mappings(xml_path):
     """Parse XML to get sensor mappings {body_part: sensor_id}."""
-    tree = ET.parse(xml_path)
-    root = tree.getroot()
+    with open(xml_path, 'r') as f:
+        content = _remove_nested_xml_comments(f.read())
+    root = ET.fromstring(content)
 
     mappings = {}
     sensors = root.find('.//ExperimentalSensors')
