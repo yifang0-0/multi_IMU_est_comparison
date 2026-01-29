@@ -49,28 +49,28 @@ def run_vqf_olsson_heading_corrected(acc_prox, gyr_prox, acc_dist, gyr_dist, fs)
     """
     Ts = 1.0 / fs
 
-    # Get base VQF+Olsson results
+    # Get base VQF+Olsson results (raw orientations and estimated joint axes)
     _, jhat_prox, jhat_dist, _, q_prox, q_dist = run_vqf_olsson(
         acc_prox, gyr_prox, acc_dist, gyr_dist, fs
     )
 
-    # Align sensor frames to joint axis (z-axis = joint axis)
-    q_align_prox = qmt.quatFrom2Axes(z=jhat_prox, x=acc_prox[0], exactAxis='z')
-    q_align_dist = qmt.quatFrom2Axes(z=jhat_dist, x=acc_dist[0], exactAxis='z')
-    q_seg_prox = qmt.qmult(q_prox, q_align_prox)
-    q_seg_dist = qmt.qmult(q_dist, q_align_dist)
-
-    # Apply heading correction to remove yaw drift
-    t = qmt.timeVec(N=q_seg_prox.shape[0], Ts=Ts)
-    out = qmt.headingCorrection(
+    # Apply heading correction to raw VQF orientations
+    # headingCorrection returns: (quat2Corr, delta, deltaFilt, rating, state)
+    # Only the distal quaternion is corrected; proximal remains unchanged
+    t = qmt.timeVec(N=q_prox.shape[0], Ts=Ts)
+    q_dist_corr, *_ = qmt.headingCorrection(
         gyr1=gyr_prox, gyr2=gyr_dist,
-        quat1=q_seg_prox, quat2=q_seg_dist,
-        t=t, joint=[0, 0, 1], jointInfo={},
+        quat1=q_prox, quat2=q_dist,
+        t=t,
+        joint=jhat_prox,  # Use estimated joint axis (shape (3,) for 1D joint)
+        jointInfo={},
         estSettings={'constraint': 'euler_1d'}
     )
 
-    # Calculate relative orientation and extract angle
-    q_rel = qmt.qrel(q_seg_prox, out[0])
-    angle_rad = np.unwrap(qmt.eulerAngles(q_rel, axes='zyx')[:, 0])
+    # Calculate relative quaternion from corrected orientations
+    q_rel_corr = qmt.qmult(qmt.qinv(q_prox), q_dist_corr)
 
-    return np.degrees(angle_rad)
+    # Use swing-twist decomposition for proper angle extraction around joint axis
+    angle_deg = calculate_joint_angle(q_rel_corr, jhat_prox)
+
+    return angle_deg
