@@ -68,7 +68,7 @@ def run_kf_gframe(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, r1=None, r2=None,
 
     # Joint axis estimation based on mode
     if axis_mode == 'fixed':
-        angle_deg = np.degrees(np.unwrap(qmt.eulerAngles(q_rel, axes=euler_axes)[:, 0]))
+        angle_deg = np.degrees(qmt.eulerAngles(q_rel, axes=euler_axes)[:, 0])
         axis_map = {'zyx': [0, 0, 1], 'xyz': [1, 0, 0], 'yxz': [0, 1, 0],
                     'zxy': [0, 0, 1], 'xzy': [1, 0, 0], 'yzx': [0, 1, 0]}
         jhat = np.array(axis_map.get(euler_axes, [0, 0, 1]), dtype=float)
@@ -95,8 +95,13 @@ def run_kf_gframe_olsson(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, r1=None, r2
     return run_kf_gframe(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, r1=r1, r2=r2, axis_mode='olsson')
 
 
-def run_kf_gframe_optimized(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, gt_angles, r1=None, r2=None, calib_samples=3000):
-    """KF with gravity frame using optimized joint axis (requires ground truth)."""
+def run_kf_gframe_optimized(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, gt_angles, r1=None, r2=None, calib_samples=None):
+    """KF with gravity frame using optimized joint axis (requires ground truth).
+
+    By default uses full dataset for optimization to avoid overfitting to short windows.
+    """
+    if calib_samples is None:
+        calib_samples = len(gt_angles)  # Use full dataset by default
     return run_kf_gframe(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, r1=r1, r2=r2,
                          axis_mode='optimize', gt_angles=gt_angles, calib_samples=calib_samples)
 
@@ -112,7 +117,7 @@ def _optimize_joint_axis(q_rel, gt_angles, calib_samples):
     def objective(params):
         jhat = spherical_to_cart(*params)
         angle_est = calculate_joint_angle(q_calib, jhat)
-        return np.sqrt(np.mean((angle_est - gt_calib)**2))
+        return np.sqrt(np.mean((gt_calib - angle_est)**2))
 
     # Multi-start optimization from X, Y, Z axis initializations
     init_points = [(0.01, 0), (np.pi/2, 0), (np.pi/2, np.pi/2)]

@@ -35,20 +35,12 @@ from plotting import plot_time_series_error, plot_error_comparison
 
 
 def _eval_imu_method(name, angle_deg, data, errors_dict):
-    """Evaluate IMU method with fine-tuning alignment search."""
+    """Evaluate IMU method against ground truth."""
     gt = data['gt']
-    best_rmse, best_offset = float('inf'), 0
-
-    # Fine search only - data is pre-aligned
-    for delta in range(-50, 51):
-        est, gt_a = align_signals(angle_deg, gt, delta)
-        if len(est) > 0:
-            rmse = np.sqrt(np.mean((gt_a - est)**2))
-            if rmse < best_rmse:
-                best_rmse, best_offset = rmse, delta
-
-    est, gt_a = align_signals(angle_deg, gt, best_offset)
-    print(f"{name} - RMSE: {best_rmse:.2f} deg (fine-tune: {best_offset})")
+    n = min(len(angle_deg), len(gt))
+    est, gt_a = angle_deg[:n], gt[:n]
+    rmse = np.sqrt(np.mean((gt_a - est)**2))
+    print(f"{name} - RMSE: {rmse:.2f} deg")
     errors_dict[name] = np.abs(gt_a - est)
 
 
@@ -200,7 +192,7 @@ def process_kf_gframe_optimized(data, errors_dict):
     print("\n=== KF_Gframe + Optimized Axis ===")
     angle_deg, r1_est, r2_est, _, _ = run_kf_gframe_optimized(
         data['acc_prox'], data['gyr_prox'], data['acc_dist'], data['gyr_dist'],
-        data['fs'], gt_angles=data['gt'], calib_samples=3000
+        data['fs'], gt_angles=data['gt'], calib_samples= 3000
     )
     _eval_imu_method('kf_gframe_optimized', angle_deg, data, errors_dict)
 
