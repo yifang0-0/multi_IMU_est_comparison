@@ -90,6 +90,17 @@ def run_kf_gframe(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, r1=None, r2=None,
     return angle_deg, r1, r2, jhat, q_rel
 
 
+def run_kf_gframe_olsson(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, r1=None, r2=None):
+    """KF with gravity frame using Olsson joint axis estimation."""
+    return run_kf_gframe(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, r1=r1, r2=r2, axis_mode='olsson')
+
+
+def run_kf_gframe_optimized(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, gt_angles, r1=None, r2=None, calib_samples=3000):
+    """KF with gravity frame using optimized joint axis (requires ground truth)."""
+    return run_kf_gframe(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, r1=r1, r2=r2,
+                         axis_mode='optimize', gt_angles=gt_angles, calib_samples=calib_samples)
+
+
 def _optimize_joint_axis(q_rel, gt_angles, calib_samples):
     """Find joint axis minimizing RMSE against ground truth."""
     n = min(calib_samples, len(gt_angles), len(q_rel))

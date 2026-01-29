@@ -17,8 +17,8 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import pandas as pd
 
 # Valid subjects (others excluded due to data issues per CLAUDE.md)
-VALID_SUBJECTS = ['Subject01', 'Subject02', 'Subject03', 'Subject04',
-                  'Subject07', 'Subject08', 'Subject11']
+VALID_SUBJECTS = ['Subject02', 'Subject03', 'Subject04',
+                  'Subject07', 'Subject08']
 
 from utils import (
     load_imu_data, get_sensor_mappings,
@@ -27,7 +27,10 @@ from utils import (
     compute_raw_signal_offset, validate_offset
 )
 from methods.shared import load_mot, calculate_joint_angle
-from methods import run_vqf_olsson, run_vqf_olsson_heading_corrected, run_kf_gframe
+from methods import (
+    run_vqf_olsson, run_vqf_olsson_heading_corrected,
+    run_kf_gframe_olsson, run_kf_gframe_optimized
+)
 from plotting import plot_time_series_error, plot_error_comparison
 
 
@@ -62,9 +65,7 @@ JOINTS = {
     'knee': {
         'proximal_sensor': 'femur_r_imu',
         'distal_sensor': 'tibia_r_imu',
-        'gt_column': 'knee_angle_r',
-        'r1_default': np.array([-0.1222504, 0.01730777, -0.00477925]),
-        'r2_default': np.array([-0.03597717, -0.01554343, -0.0232674]),
+        'gt_column': 'knee_angle_r'
     },
     'ankle': {
         'proximal_sensor': 'tibia_r_imu',
@@ -185,18 +186,23 @@ def process_vqf_olsson_heading_correction(data, errors_dict):
     _eval_imu_method('vqf+olsson+heading_correction', angle_deg, data, errors_dict)
 
 
-def process_kf_gframe(data, errors_dict):
-    """Run KF_Gframe and add errors to dict."""
-    print("\n=== KF_Gframe with Auto R ===")
-    jc = data['joint_config']
-    r1, r2 = jc.get('r1_default'), jc.get('r2_default')
-    angle_deg, r1_est, r2_est, _, _ = run_kf_gframe(
-        data['acc_prox'], data['gyr_prox'], data['acc_dist'], data['gyr_dist'],
-        data['fs'], r1=r1, r2=r2, axis_mode='optimize', gt_angles=data['gt'], calib_samples=3000
+def process_kf_gframe_olsson(data, errors_dict):
+    """Run KF_Gframe with Olsson joint axis estimation."""
+    print("\n=== KF_Gframe + Olsson ===")
+    angle_deg, r1_est, r2_est, _, _ = run_kf_gframe_olsson(
+        data['acc_prox'], data['gyr_prox'], data['acc_dist'], data['gyr_dist'], data['fs']
     )
-    if r1 is None:
-        print(f"Estimated r1: {r1_est}, r2: {r2_est}")
-    _eval_imu_method('kf_gframe', angle_deg, data, errors_dict)
+    _eval_imu_method('kf_gframe_olsson', angle_deg, data, errors_dict)
+
+
+def process_kf_gframe_optimized(data, errors_dict):
+    """Run KF_Gframe with optimized joint axis (uses ground truth for calibration)."""
+    print("\n=== KF_Gframe + Optimized Axis ===")
+    angle_deg, r1_est, r2_est, _, _ = run_kf_gframe_optimized(
+        data['acc_prox'], data['gyr_prox'], data['acc_dist'], data['gyr_dist'],
+        data['fs'], gt_angles=data['gt'], calib_samples=3000
+    )
+    _eval_imu_method('kf_gframe_optimized', angle_deg, data, errors_dict)
 
 
 def process_opensense(data, errors_dict):
@@ -248,10 +254,13 @@ def run_single_subject(joint, method, subject_id, no_plot=True):
 
     errors_dict = {}
 
-    if method in ('kf_gframe', 'all'):
-        process_kf_gframe(data, errors_dict)
+    if method in ('kf_gframe_olsson', 'all'):
+        process_kf_gframe_olsson(data, errors_dict)
 
-    if method in ('vqf_olsson', 'all'):
+    if method in ('kf_gframe_optimized', 'all'):
+        process_kf_gframe_optimized(data, errors_dict)
+
+    if method == 'vqf_olsson':  # Excluded from 'all' due to poor performance
         process_vqf_olsson(data, errors_dict)
 
     if method in ('vqf_olsson_heading_correction', 'all'):
@@ -264,10 +273,10 @@ def run_single_subject(joint, method, subject_id, no_plot=True):
         process_vqf_opensim(data, errors_dict)
 
     # Plot results for single subject (when not in parallel mode)
-    if not no_plot and errors_dict:
+    if errors_dict:
         joint_title = joint.capitalize()
-        plot_time_series_error(errors_dict, joint_name=joint_title, show=True, num_entries=3)
-        plot_error_comparison(errors_dict, joint_name=joint_title, show=True)
+        plot_time_series_error(errors_dict, joint_name=joint_title, show=not no_plot, num_entries=3)
+        plot_error_comparison(errors_dict, joint_name=joint_title, show=not no_plot)
 
     return subject_id, errors_dict
 
@@ -354,7 +363,8 @@ def main():
                         help='Joint to estimate (default: knee)')
     parser.add_argument('--method', type=str, default='all',
                         choices=['vqf_olsson', 'vqf_olsson_heading_correction',
-                                 'opensense', 'kf_gframe', 'vqf_opensim', 'all'],
+                                 'opensense', 'kf_gframe_olsson', 'kf_gframe_optimized',
+                                 'vqf_opensim', 'all'],
                         help='Estimation method (default: all)')
     parser.add_argument('--subject', type=str, default='Subject08',
                         help='Subject ID or "all" for all valid subjects (default: Subject08)')
@@ -370,11 +380,7 @@ def main():
         results = run_all_subjects(args.joint, args.method, args.workers)
         print_summary_table(results, args.joint)
     else:
-        _, errors_dict = run_single_subject(args.joint, args.method, args.subject, args.no_plot)
-        if errors_dict and not args.no_plot:
-            joint_title = args.joint.capitalize()
-            plot_time_series_error(errors_dict, joint_name=joint_title, show=True, num_entries=3)
-            plot_error_comparison(errors_dict, joint_name=joint_title, show=True)
+        _ = run_single_subject(args.joint, args.method, args.subject, args.no_plot)
 
 
 if __name__ == "__main__":

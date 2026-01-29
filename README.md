@@ -6,27 +6,28 @@ A benchmarking framework for comparing IMU-based joint angle estimation methods 
 
 | Method | Description |
 |--------|-------------|
-| `kf_gframe` | Extended Kalman Filter with gravity frame constraints and auto-estimated lever arms |
 | `vqf_olsson` | VQF orientation estimation + Olsson hinge joint axis estimation |
-| `vqf_olsson_heading_correction` | VQF+Olsson with qmt heading drift correction (experimental) |
+| `vqf_olsson_heading_correction` | VQF+Olsson with qmt heading drift correction |
+| `kf_gframe_olsson` | Extended Kalman Filter with gravity frame constraints + Olsson joint axis |
+| `kf_gframe_optimized` | KF with gravity frame + optimized joint axis (uses ground truth for calibration) |
 | `opensense` | OpenSense IK results (Xsens, Madgwick, Mahony algorithms) |
 | `vqf_opensim` | Precomputed VQF-OpenSim results |
 
 ## Results Summary
 
-**Knee Joint RMSE (degrees)** across 7 subjects:
+**Knee Joint RMSE (degrees)** - Subject08 representative results:
 
-| Method | Mean RMSE |
-|--------|-----------|
-| kf_gframe | **3.15** |
-| vqf_opensim | 5.50 |
-| Mahony | 5.98 |
-| Madgwick | 6.42 |
-| Xsens | 18.26 |
-| vqf+olsson+heading_correction | 19.98 |
-| vqf+olsson | 86.40 |
+| Method | RMSE |
+|--------|------|
+| vqf_olsson_heading_correction | **2.20** |
+| kf_gframe_optimized | 2.54 |
+| Madgwick | 4.75 |
+| kf_gframe_olsson | 5.01 |
+| Mahony | 5.57 |
+| Xsens | 5.99 |
+| VQF-OpenSim | 13.06 |
 
-The Kalman Filter method (`kf_gframe`) achieves the best performance for knee angle estimation.
+The heading-corrected VQF+Olsson method achieves excellent performance after proper quaternion handling.
 
 ## Setup
 
@@ -47,7 +48,7 @@ python download_simtk_dataset.py
 python run_estimation.py --joint knee --subject Subject08
 
 # Run specific method
-python run_estimation.py --joint ankle --method kf_gframe
+python run_estimation.py --joint ankle --method kf_gframe_olsson
 
 # Run on all valid subjects with parallel processing
 python run_estimation.py --joint knee --method all --subject all --workers 4
@@ -58,9 +59,9 @@ python run_estimation.py --joint knee --no-plot
 
 **Arguments:**
 - `--joint`: `knee` or `ankle`
-- `--method`: `vqf_olsson`, `vqf_olsson_heading_correction`, `opensense`, `kf_gframe`, `vqf_opensim`, or `all`
+- `--method`: `vqf_olsson`, `vqf_olsson_heading_correction`, `kf_gframe_olsson`, `kf_gframe_optimized`, `opensense`, `vqf_opensim`, or `all`
 - `--subject`: `Subject01`-`Subject11` or `all`
-- `--workers`: Number of parallel workers (default: 4)
+- `--workers`: Number of parallel workers (default: CPU count)
 - `--no-plot`: Save plots without displaying
 
 ## Data Structure
@@ -88,20 +89,22 @@ data/Subject08/
 ├── constants.py           # Physical constants
 ├── plotting.py            # Visualization
 ├── methods/
-│   ├── vqf_olsson.py      # VQF+Olsson implementation
+│   ├── vqf_olsson.py      # VQF+Olsson and heading correction
 │   ├── kf_gframe.py       # Kalman filter implementation
-│   └── shared.py          # Common utilities
+│   └── shared.py          # Common utilities (Olsson, angle calculation)
 ├── plots/                 # Generated comparison plots
 └── results/               # RMSE summary CSVs
 ```
 
 ## Valid Subjects
 
-7 subjects are valid for analysis: Subject01, Subject02, Subject03, Subject04, Subject07, Subject08, Subject11
+5 subjects are valid for analysis: Subject02, Subject03, Subject04, Subject07, Subject08
 
 **Excluded subjects:**
-- Subject05, Subject09: Malformed XML
+- Subject01, Subject11: Missing data files
+- Subject05: Malformed XML (nested comments)
 - Subject06, Subject10: IMU data at 40 Hz (expected 100 Hz)
+- Subject09: Inverted IMU attachment
 
 ## Key Libraries
 
@@ -109,6 +112,8 @@ data/Subject08/
 - numpy, scipy - Numerical processing
 - matplotlib - Visualization
 
-## Known Issues
+## Implementation Notes
 
-- **VQF+Olsson**: Poor performance, especially on ankle joint; under investigation
+- **Heading Correction**: Uses `qmt.headingCorrection` with the Olsson-estimated joint axis and swing-twist decomposition (`qmt.quatProject`) for proper angle extraction
+- **KF Gravity Frame**: Constrains both IMU orientations to share a common gravity direction, with auto-estimated lever arms
+- **Signal Alignment**: Cross-correlation used to align IMU estimates with motion capture ground truth
