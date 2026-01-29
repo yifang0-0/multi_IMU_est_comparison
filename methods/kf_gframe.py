@@ -92,15 +92,8 @@ def run_kf_gframe(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, r1=None, r2=None,
 
 def _optimize_joint_axis(q_rel, gt_angles, calib_samples):
     """Find joint axis minimizing RMSE against ground truth."""
-    from utils import find_best_shift, align_signals  # Local import to avoid circular dependency
-
-    # First find time alignment using Euler angle estimate
-    angle_euler = np.degrees(np.unwrap(qmt.eulerAngles(q_rel, axes='zyx')[:, 0]))
-    offset = find_best_shift(angle_euler, gt_angles)
-    q_aligned, gt_aligned = align_signals(q_rel, gt_angles, offset)
-
-    n = min(calib_samples, len(gt_aligned), len(q_aligned))
-    q_calib, gt_calib = q_aligned[:n], gt_aligned[:n]
+    n = min(calib_samples, len(gt_angles), len(q_rel))
+    q_calib, gt_calib = q_rel[:n], gt_angles[:n]
 
     def spherical_to_cart(theta, phi):
         return np.array([np.sin(theta)*np.cos(phi), np.sin(theta)*np.sin(phi), np.cos(theta)])

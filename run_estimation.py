@@ -15,31 +15,38 @@ from pathlib import Path
 from utils import (
     load_imu_data, get_sensor_mappings,
     find_best_shift, align_signals,
-    load_opensense_results, find_vqf_opensim_file, load_offset, save_offset
+    load_opensense_results, find_vqf_opensim_file, load_offset, save_offset,
+    compute_raw_signal_offset, validate_offset
 )
 from methods.shared import load_mot, calculate_joint_angle
 from methods import run_vqf_olsson, run_vqf_olsson_heading_corrected, run_kf_gframe
 from plotting import plot_time_series_error, plot_error_comparison
 
 
-def _eval_and_store(name, angle_deg, gt, errors_dict, data):
-    """Align signals using cached offset, compute RMSE, store error."""
-    subject_id = data['subject_id']
-    gt_col = data['joint_config']['gt_column']
+def _eval_imu_method(name, angle_deg, data, errors_dict):
+    """Evaluate IMU method with fine-tuning alignment search."""
+    gt = data['gt']
+    best_rmse, best_offset = float('inf'), 0
 
-    # Get or calculate offset
-    offset = load_offset(name, subject_id, gt_col)
-    if offset is None:
-        offset = find_best_shift(angle_deg, gt)
-        save_offset(name, subject_id, gt_col, offset)
-        print(f"  Cached offset: {offset}")
-    else:
-        print(f"  Using cached offset: {offset}")
+    # Fine search only - data is pre-aligned
+    for delta in range(-50, 51):
+        est, gt_a = align_signals(angle_deg, gt, delta)
+        if len(est) > 0:
+            rmse = np.sqrt(np.mean((gt_a - est)**2))
+            if rmse < best_rmse:
+                best_rmse, best_offset = rmse, delta
 
-    est, gt_aligned = align_signals(angle_deg, gt, offset)
-    rmse = np.sqrt(np.mean((gt_aligned - est)**2))
-    print(f"{name} - RMSE: {rmse:.2f} degrees")
-    errors_dict[name] = np.abs(gt_aligned - est)
+    est, gt_a = align_signals(angle_deg, gt, best_offset)
+    print(f"{name} - RMSE: {best_rmse:.2f} deg (fine-tune: {best_offset})")
+    errors_dict[name] = np.abs(gt_a - est)
+
+
+def _eval_precomputed(name, angle_deg, gt, errors_dict):
+    """Evaluate precomputed method (already time-synced with mocap)."""
+    n = min(len(angle_deg), len(gt))
+    error = np.abs(gt[:n] - angle_deg[:n])
+    errors_dict[name] = error
+    print(f"{name} - RMSE: {np.sqrt(np.mean(error**2)):.2f} deg")
 
 
 # Joint configuration
@@ -67,8 +74,8 @@ def prepare_data(joint_name, subject_id='Subject08'):
         subject_id: Subject identifier (e.g., 'Subject08')
 
     Returns:
-        dict with keys: q_prox, q_dist, acc_prox, gyr_prox, acc_dist, gyr_dist,
-                        fs, gt, subject_path, joint_config
+        dict with keys: acc_prox, gyr_prox, acc_dist, gyr_dist,
+                        fs, gt, subject_path, joint_config, alignment_offset
     """
     joint_config = JOINTS[joint_name]
     subject_path = Path(f'data/{subject_id}/walking')
@@ -93,6 +100,41 @@ def prepare_data(joint_name, subject_id='Subject08'):
 
     # Load ground truth
     gt_df = load_mot(subject_path / 'Mocap' / 'ikResults' / 'walking_IK.mot')
+    gt = gt_df[joint_config['gt_column']].values
+
+    # Compute joint-independent alignment offset using raw signals (pelvis gyro)
+    offset = load_offset('raw_signal', subject_id, 'alignment')
+    if offset is None:
+        offset, corr, err = compute_raw_signal_offset(subject_path, fs)
+        if err:
+            print(f"Warning: Raw signal alignment failed ({err}), falling back to zero offset")
+            offset = 0
+        else:
+            save_offset('raw_signal', subject_id, 'alignment', offset)
+            print(f"Computed raw-signal alignment offset: {offset} samples ({offset/fs:.2f} sec), corr={corr:.3f}")
+    else:
+        print(f"Using cached raw-signal alignment offset: {offset} samples ({offset/fs:.2f} sec)")
+
+    # Store original GT for precomputed methods (OpenSense, VQF-OpenSim)
+    gt_original = gt
+
+    # Align IMU and GT based on offset sign
+    if offset > 0:
+        # Mocap leads: trim early GT samples
+        gt = gt[offset:]
+    elif offset < 0:
+        # IMU leads: trim early IMU samples
+        trim = -offset
+        acc_prox, gyr_prox = acc_prox[trim:], gyr_prox[trim:]
+        acc_dist, gyr_dist = acc_dist[trim:], gyr_dist[trim:]
+
+    # Truncate to common length (all arrays must match)
+    n = min(len(acc_prox), len(acc_dist), len(gt))
+    acc_prox, gyr_prox = acc_prox[:n], gyr_prox[:n]
+    acc_dist, gyr_dist = acc_dist[:n], gyr_dist[:n]
+    gt = gt[:n]
+
+    print(f"Aligned data length: {n} samples ({n/fs:.1f} sec)")
 
     return {
         'acc_prox': acc_prox,
@@ -100,7 +142,8 @@ def prepare_data(joint_name, subject_id='Subject08'):
         'acc_dist': acc_dist,
         'gyr_dist': gyr_dist,
         'fs': fs,
-        'gt': gt_df[joint_config['gt_column']].values,
+        'gt': gt,                   # Aligned GT for IMU methods
+        'gt_original': gt_original, # Original GT for precomputed methods
         'subject_path': subject_path,
         'joint_config': joint_config,
         'subject_id': subject_id,
@@ -121,7 +164,7 @@ def process_vqf_olsson(data, errors_dict):
     n = min(len(angle_deg), len(gt))
     if abs(np.corrcoef(angle_neg[:n], gt[:n])[0, 1]) > abs(np.corrcoef(angle_deg[:n], gt[:n])[0, 1]):
         angle_deg = angle_neg
-    _eval_and_store('vqf+olsson', angle_deg, gt, errors_dict, data)
+    _eval_imu_method('vqf+olsson', angle_deg, data, errors_dict)
 
 
 def process_vqf_olsson_heading_correction(data, errors_dict):
@@ -130,7 +173,7 @@ def process_vqf_olsson_heading_correction(data, errors_dict):
     angle_deg = run_vqf_olsson_heading_corrected(
         data['acc_prox'], data['gyr_prox'], data['acc_dist'], data['gyr_dist'], data['fs']
     )
-    _eval_and_store('vqf+olsson+heading_correction', angle_deg, data['gt'], errors_dict, data)
+    _eval_imu_method('vqf+olsson+heading_correction', angle_deg, data, errors_dict)
 
 
 def process_kf_gframe(data, errors_dict):
@@ -140,26 +183,32 @@ def process_kf_gframe(data, errors_dict):
     r1, r2 = jc.get('r1_default'), jc.get('r2_default')
     angle_deg, r1_est, r2_est, _, _ = run_kf_gframe(
         data['acc_prox'], data['gyr_prox'], data['acc_dist'], data['gyr_dist'],
-        data['fs'], r1=r1, r2=r2
+        data['fs'], r1=r1, r2=r2, axis_mode='optimize', gt_angles=data['gt'], calib_samples=3000
     )
     if r1 is None:
         print(f"Estimated r1: {r1_est}, r2: {r2_est}")
-    _eval_and_store('kf_gframe', angle_deg, data['gt'], errors_dict, data)
+    _eval_imu_method('kf_gframe', angle_deg, data, errors_dict)
 
 
 def process_opensense(data, errors_dict):
-    """Load OpenSense results and add errors to dict."""
+    """Load OpenSense results and add errors to dict.
+
+    Note: OpenSense results are already temporally aligned with mocap,
+    so we use gt_original (no IMU-mocap offset applied).
+    """
     print("\n=== OpenSense Comparison ===")
-    gt = data['gt']
+    gt = data['gt_original']
     results = load_opensense_results(data['subject_path'], data['joint_config']['gt_column'])
     for algo, angle_deg in results.items():
-        n = min(len(gt), len(angle_deg))
-        errors_dict[algo.capitalize()] = np.abs(gt[:n] - angle_deg[:n])
-        print(f"{algo.capitalize()} - RMSE: {np.sqrt(np.mean(errors_dict[algo.capitalize()]**2)):.2f} degrees")
+        _eval_precomputed(algo.capitalize(), angle_deg, gt, errors_dict)
 
 
 def process_vqf_opensim(data, errors_dict):
-    """Load VQF-OpenSim results and add errors to dict."""
+    """Load VQF-OpenSim results and add errors to dict.
+
+    Note: VQF-OpenSim results are already temporally aligned with mocap,
+    so we use gt_original (no IMU-mocap offset applied).
+    """
     vqf_file = find_vqf_opensim_file(data['subject_id'])
     if not vqf_file:
         print("\n=== VQF-OpenSim: No file found ===")
@@ -168,7 +217,7 @@ def process_vqf_opensim(data, errors_dict):
     print("\n=== VQF-OpenSim ===")
     gt_col = data['joint_config']['gt_column']
     vqf_angle = load_mot(vqf_file)[gt_col].values
-    _eval_and_store('VQF-OpenSim', vqf_angle, data['gt'], errors_dict, data)
+    _eval_precomputed('VQF-OpenSim', vqf_angle, data['gt_original'], errors_dict)
 
 
 def main():

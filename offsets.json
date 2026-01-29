@@ -1,9 +1,9 @@
 {
-  "kf_gframe_Subject02_knee_angle_r": -8583,
-  "vqf+olsson_Subject02_knee_angle_r": -9411,
-  "vqf+olsson+heading_correction_Subject02_knee_angle_r": 9473,
-  "VQF-OpenSim_Subject02_knee_angle_r": 566,
-  "kf_gframe_Subject08_knee_angle_r": -2005,
-  "vqf+olsson_Subject08_knee_angle_r": -2004,
-  "vqf+olsson+heading_correction_Subject08_knee_angle_r": -2002
+  "raw_signal_Subject08_alignment": -2005,
+  "raw_signal_Subject01_alignment": -42997,
+  "raw_signal_Subject02_alignment": -68434,
+  "raw_signal_Subject03_alignment": -83444,
+  "raw_signal_Subject04_alignment": -2817,
+  "raw_signal_Subject07_alignment": -1702,
+  "raw_signal_Subject11_alignment": -2004
 }
