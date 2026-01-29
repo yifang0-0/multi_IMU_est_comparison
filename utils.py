@@ -110,39 +110,25 @@ def estimate_orientations(acc, gyr, fs):
 # =============================================================================
 
 def find_best_shift(est_signal, gt_signal):
-    """Find where shorter signal best matches within longer signal using cross-correlation.
+    """Find best alignment offset between two signals using cross-correlation.
 
-    Returns offset such that est_signal[offset:] aligns with gt_signal (or vice versa).
-    Positive offset means est_signal starts before gt_signal.
+    Returns (offset, correlation) where offset is for use with align_signals
+    (positive = trim gt, negative = trim est).
     """
-    # Handle NaN/constant signals
     if np.std(est_signal) == 0 or np.std(gt_signal) == 0:
-        return 0
+        return 0, 0.0
     if np.isnan(est_signal).any() or np.isnan(gt_signal).any():
-        return 0
+        return 0, 0.0
 
-    # Normalize both signals
     sig1 = (est_signal - np.mean(est_signal)) / (np.std(est_signal) + 1e-6)
     sig2 = (gt_signal - np.mean(gt_signal)) / (np.std(gt_signal) + 1e-6)
 
-    # Ensure sig1 is the longer signal for consistent offset interpretation
-    if len(sig1) < len(sig2):
-        sig1, sig2 = sig2, sig1
-        swapped = True
-    else:
-        swapped = False
-
-    # Correlate: slides sig2 along sig1
-    # mode='valid' gives correlation at each position where sig2 fully overlaps sig1
-    # Result length: len(sig1) - len(sig2) + 1
-    corr = correlate(sig1, sig2, mode='valid')
-
-    best_offset = int(np.argmax(np.abs(corr)))
-
-    # Convert to lag convention (positive = est starts before gt)
-    if swapped:
-        return -best_offset
-    return best_offset
+    corr = correlate(sig1, sig2, mode='full')
+    lags = np.arange(-len(sig2) + 1, len(sig1))
+    best_idx = np.argmax(corr)
+    peak_corr = corr[best_idx] / min(len(sig1), len(sig2))
+    # Negate to match align_signals convention (positive = trim gt)
+    return -int(lags[best_idx]), float(peak_corr)
 
 
 def align_signals(est_signal, gt_signal, shift):
@@ -277,58 +263,14 @@ def compute_raw_signal_offset(subject_path, fs=FS, method='pelvis_gyr_z'):
         mocap_signal = _lowpass_filter(np.linalg.norm(d_euler, axis=0), cutoff=5.0, fs=fs)
 
     # Compute offset with full correlation (searches all lags)
-    offset, corr = _find_best_shift_with_corr(imu_signal, mocap_signal, mode='full')
+    offset, corr = find_best_shift(imu_signal, mocap_signal)
 
-    # Validate offset
-    is_valid, overlap, msg = validate_offset(offset, len(imu_signal), len(mocap_signal))
+    # Validate offset (use negated offset for validation since find_best_shift already negates)
+    is_valid, overlap, msg = validate_offset(-offset, len(imu_signal), len(mocap_signal))
     if not is_valid:
         return None, corr, f"Invalid offset: {msg}"
 
-    # Negate to match legacy align_signals convention (negative = IMU starts before mocap)
-    return -offset, corr, None
-
-
-def _find_best_shift_with_corr(sig1, sig2, mode='full'):
-    """Find best alignment offset and correlation coefficient.
-
-    Args:
-        sig1: First signal (typically IMU)
-        sig2: Second signal (typically mocap)
-        mode: 'full' searches all lags (recommended), 'valid' limits search range
-
-    Returns:
-        (offset, peak_corr): offset in samples, normalized correlation at peak
-    """
-    if np.std(sig1) == 0 or np.std(sig2) == 0:
-        return 0, 0.0
-    if np.isnan(sig1).any() or np.isnan(sig2).any():
-        return 0, 0.0
-
-    # Normalize
-    sig1_norm = (sig1 - np.mean(sig1)) / (np.std(sig1) + 1e-6)
-    sig2_norm = (sig2 - np.mean(sig2)) / (np.std(sig2) + 1e-6)
-
-    if mode == 'full':
-        # Full cross-correlation - searches all possible lags
-        corr = correlate(sig1_norm, sig2_norm, mode='full')
-        lags = np.arange(len(corr)) - (len(sig2_norm) - 1)
-        best_idx = int(np.argmax(np.abs(corr)))
-        offset = lags[best_idx]
-        min_len = min(len(sig1_norm), len(sig2_norm))
-        peak_corr = np.abs(corr[best_idx]) / min_len
-    else:
-        # Valid mode - original behavior with limited range
-        if len(sig1_norm) < len(sig2_norm):
-            sig1_norm, sig2_norm = sig2_norm, sig1_norm
-            swapped = True
-        else:
-            swapped = False
-        corr = correlate(sig1_norm, sig2_norm, mode='valid')
-        best_idx = int(np.argmax(np.abs(corr)))
-        peak_corr = np.abs(corr[best_idx]) / len(sig2_norm)
-        offset = -best_idx if swapped else best_idx
-
-    return offset, peak_corr
+    return offset, corr, None
 
 
 # =============================================================================

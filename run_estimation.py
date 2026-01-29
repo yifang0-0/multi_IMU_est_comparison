@@ -6,11 +6,19 @@ Usage:
     python run_estimation.py --joint ankle --method vqf_olsson
     python run_estimation.py --joint knee --method kf_gframe --no-plot
     python run_estimation.py --joint knee --subject Subject08 --method all
+    python run_estimation.py --joint knee --method all --subject all
+    python run_estimation.py --joint knee --method all --subject all --workers 4
 """
 import numpy as np
 import argparse
 import os
 from pathlib import Path
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import pandas as pd
+
+# Valid subjects (others excluded due to data issues per CLAUDE.md)
+VALID_SUBJECTS = ['Subject01', 'Subject02', 'Subject03', 'Subject04',
+                  'Subject07', 'Subject08', 'Subject11']
 
 from utils import (
     load_imu_data, get_sensor_mappings,
@@ -144,6 +152,7 @@ def prepare_data(joint_name, subject_id='Subject08'):
         'fs': fs,
         'gt': gt,                   # Aligned GT for IMU methods
         'gt_original': gt_original, # Original GT for precomputed methods
+        'alignment_offset': offset, # Raw signal alignment offset
         'subject_path': subject_path,
         'joint_config': joint_config,
         'subject_id': subject_id,
@@ -204,11 +213,7 @@ def process_opensense(data, errors_dict):
 
 
 def process_vqf_opensim(data, errors_dict):
-    """Load VQF-OpenSim results and add errors to dict.
-
-    Note: VQF-OpenSim results are already temporally aligned with mocap,
-    so we use gt_original (no IMU-mocap offset applied).
-    """
+    """Load VQF-OpenSim results and align to ground truth via cross-correlation."""
     vqf_file = find_vqf_opensim_file(data['subject_id'])
     if not vqf_file:
         print("\n=== VQF-OpenSim: No file found ===")
@@ -217,7 +222,123 @@ def process_vqf_opensim(data, errors_dict):
     print("\n=== VQF-OpenSim ===")
     gt_col = data['joint_config']['gt_column']
     vqf_angle = load_mot(vqf_file)[gt_col].values
-    _eval_precomputed('VQF-OpenSim', vqf_angle, data['gt_original'], errors_dict)
+    gt = data['gt_original']
+
+    # VQF-OpenSim has different time boundaries than raw IMU, align via cross-correlation
+    offset, _ = find_best_shift(vqf_angle, gt)
+    est, gt_aligned = align_signals(vqf_angle, gt, offset)
+
+    error = np.abs(gt_aligned - est)
+    errors_dict['VQF-OpenSim'] = error
+    rmse = np.sqrt(np.mean(error**2))
+    print(f"VQF-OpenSim - RMSE: {rmse:.2f} deg (offset: {offset})")
+
+
+def run_single_subject(joint, method, subject_id, no_plot=True):
+    """Run estimation on a single subject and return errors dict."""
+    print(f"\n{'='*60}")
+    print(f"Processing {subject_id} - {joint} joint")
+    print(f"{'='*60}")
+
+    try:
+        data = prepare_data(joint, subject_id)
+    except Exception as e:
+        print(f"Error loading data for {subject_id}: {e}")
+        return subject_id, {}
+
+    errors_dict = {}
+
+    if method in ('kf_gframe', 'all'):
+        process_kf_gframe(data, errors_dict)
+
+    if method in ('vqf_olsson', 'all'):
+        process_vqf_olsson(data, errors_dict)
+
+    if method in ('vqf_olsson_heading_correction', 'all'):
+        process_vqf_olsson_heading_correction(data, errors_dict)
+
+    if method in ('opensense', 'all'):
+        process_opensense(data, errors_dict)
+
+    if method in ('vqf_opensim', 'all'):
+        process_vqf_opensim(data, errors_dict)
+
+    # Plot results for single subject (when not in parallel mode)
+    if not no_plot and errors_dict:
+        joint_title = joint.capitalize()
+        plot_time_series_error(errors_dict, joint_name=joint_title, show=True, num_entries=3)
+        plot_error_comparison(errors_dict, joint_name=joint_title, show=True)
+
+    return subject_id, errors_dict
+
+
+def run_all_subjects(joint, method, workers=None):
+    """Run estimation on all valid subjects in parallel."""
+    print(f"\nRunning {method} on all subjects for {joint} joint...")
+    print(f"Valid subjects: {', '.join(VALID_SUBJECTS)}")
+    print(f"Workers: {workers or 'auto (CPU count)'}\n")
+
+    results = {}
+    with ProcessPoolExecutor(max_workers=workers) as executor:
+        futures = {
+            executor.submit(run_single_subject, joint, method, subj, True): subj
+            for subj in VALID_SUBJECTS
+        }
+        for future in as_completed(futures):
+            subj = futures[future]
+            try:
+                _, errors = future.result()
+                results[subj] = errors
+            except Exception as e:
+                print(f"Error processing {subj}: {e}")
+                results[subj] = {}
+    return results
+
+
+def print_summary_table(results, joint):
+    """Print RMSE summary table and save to CSV."""
+    # Collect all methods from results
+    methods = set()
+    for errors in results.values():
+        methods.update(errors.keys())
+    methods = sorted(methods)
+
+    if not methods:
+        print("No results to summarize.")
+        return
+
+    # Build rows with RMSE values
+    rows = []
+    for subj in sorted(results.keys()):
+        row = {'subject': subj}
+        for m in methods:
+            if m in results[subj] and len(results[subj][m]) > 0:
+                row[m] = np.sqrt(np.mean(results[subj][m]**2))
+            else:
+                row[m] = np.nan
+        rows.append(row)
+
+    # Add mean row
+    mean_row = {'subject': 'MEAN'}
+    for m in methods:
+        vals = [r[m] for r in rows if not np.isnan(r.get(m, np.nan))]
+        mean_row[m] = np.mean(vals) if vals else np.nan
+    rows.append(mean_row)
+
+    df = pd.DataFrame(rows)
+
+    # Print table
+    print("\n" + "="*80)
+    print(f"RMSE Summary - {joint.capitalize()} Joint (degrees)")
+    print("="*80)
+    print(df.to_string(index=False, float_format='%.2f'))
+
+    # Save to CSV
+    results_dir = Path('results')
+    results_dir.mkdir(exist_ok=True)
+    csv_path = results_dir / f'{joint}_rmse_summary.csv'
+    df.to_csv(csv_path, index=False, float_format='%.2f')
+    print(f"\nResults saved to {csv_path}")
 
 
 def main():
@@ -236,40 +357,24 @@ def main():
                                  'opensense', 'kf_gframe', 'vqf_opensim', 'all'],
                         help='Estimation method (default: all)')
     parser.add_argument('--subject', type=str, default='Subject08',
-                        help='Subject ID (default: Subject08)')
+                        help='Subject ID or "all" for all valid subjects (default: Subject08)')
+    parser.add_argument('--workers', type=int, default=None,
+                        help='Number of parallel workers (default: CPU count)')
     parser.add_argument('--no-plot', action='store_true',
                         help='Disable interactive plotting (plots still saved)')
     args = parser.parse_args()
 
     Path('plots').mkdir(exist_ok=True)
 
-    # Load data
-    print(f"\nPreparing data for {args.joint} joint, {args.subject}...")
-    data = prepare_data(args.joint, args.subject)
-    errors_dict = {}
-
-    # Run selected methods
-    if args.method in ('kf_gframe', 'all'):
-        process_kf_gframe(data, errors_dict)
-
-    if args.method in ('vqf_olsson', 'all'):
-        process_vqf_olsson(data, errors_dict)
-
-    if args.method in ('vqf_olsson_heading_correction', 'all'):
-        process_vqf_olsson_heading_correction(data, errors_dict)
-
-    if args.method in ('opensense', 'all'):
-        process_opensense(data, errors_dict)
-
-    if args.method in ('vqf_opensim', 'all'):
-        process_vqf_opensim(data, errors_dict)
-
-    # Plot results
-    if errors_dict:
-        joint_title = args.joint.capitalize()
-        show_plots = not args.no_plot
-        plot_time_series_error(errors_dict, joint_name=joint_title, show=show_plots, num_entries=3)
-        plot_error_comparison(errors_dict, joint_name=joint_title, show=show_plots)
+    if args.subject == 'all':
+        results = run_all_subjects(args.joint, args.method, args.workers)
+        print_summary_table(results, args.joint)
+    else:
+        _, errors_dict = run_single_subject(args.joint, args.method, args.subject, args.no_plot)
+        if errors_dict and not args.no_plot:
+            joint_title = args.joint.capitalize()
+            plot_time_series_error(errors_dict, joint_name=joint_title, show=True, num_entries=3)
+            plot_error_comparison(errors_dict, joint_name=joint_title, show=True)
 
 
 if __name__ == "__main__":
