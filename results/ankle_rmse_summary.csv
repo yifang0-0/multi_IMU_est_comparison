@@ -1,0 +1,9 @@
+subject,Madgwick,Mahony,VQF-OpenSim,Xsens,kf_gframe,vqf+olsson,vqf+olsson+heading_correction
+Subject01,,,,,,,
+Subject02,12.36,12.70,3.53,15.49,6.56,66.19,8.70
+Subject03,11.52,12.87,,5.56,27.26,66.51,24.53
+Subject04,7.90,10.86,8.07,5.30,4.78,71.61,21.63
+Subject07,4.50,5.04,,16.92,2.98,101.33,11.34
+Subject08,5.35,6.74,,7.35,5.04,72.01,38.36
+Subject11,,,,,,,
+MEAN,8.33,9.64,5.80,10.12,9.33,75.53,20.91

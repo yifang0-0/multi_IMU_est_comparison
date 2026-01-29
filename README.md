@@ -1,83 +1,114 @@
-# Joint Angle Estimation Scripts
+# Multi-IMU Joint Angle Estimation Comparison
 
-This project contains Python scripts for estimating knee and ankle joint angles using IMU data. It implements various methods including VQF orientation estimation, Olsson joint axis estimation, and Heading Correction. It also allows comparison with OpenSense results.
+A benchmarking framework for comparing IMU-based joint angle estimation methods against motion capture ground truth. Implements and evaluates multiple algorithms for knee and ankle angle estimation from dual-IMU sensor configurations.
 
-## Environment Setup
+## Methods Implemented
 
-The scripts are designed to run in a Python 3 environment. A virtual environment is recommended.
+| Method | Description |
+|--------|-------------|
+| `kf_gframe` | Extended Kalman Filter with gravity frame constraints and auto-estimated lever arms |
+| `vqf_olsson` | VQF orientation estimation + Olsson hinge joint axis estimation |
+| `vqf_olsson_heading_correction` | VQF+Olsson with qmt heading drift correction (experimental) |
+| `opensense` | OpenSense IK results (Xsens, Madgwick, Mahony algorithms) |
+| `vqf_opensim` | Precomputed VQF-OpenSim results |
 
-1.  **Create and activate a virtual environment:**
-    ```bash
-    python3 -m venv .venv
-    source .venv/bin/activate  # On macOS/Linux
-    # .venv\Scripts\activate  # On Windows
-    ```
+## Results Summary
 
-2.  **Install dependencies:**
-    ```bash
-    pip install -r requirements.txt
-    ```
+**Knee Joint RMSE (degrees)** across 7 subjects:
 
-## Data Structure
+| Method | Mean RMSE |
+|--------|-----------|
+| kf_gframe | **3.15** |
+| vqf_opensim | 5.50 |
+| Mahony | 5.98 |
+| Madgwick | 6.42 |
+| Xsens | 18.26 |
+| vqf+olsson+heading_correction | 19.98 |
+| vqf+olsson | 86.40 |
 
-The scripts expect the following data structure in the root directory:
+The Kalman Filter method (`kf_gframe`) achieves the best performance for knee angle estimation.
 
--   `Subject08/`: Contains the subject data.
-    -   `walking/IMU/xsens/LowerExtremity/`: Raw IMU data (`.txt` files).
-    -   `walking/IMU/myIMUMappings_walking.xml`: Sensor mappings.
-    -   `walking/Mocap/ikResults/walking_IK.mot`: Ground truth motion capture data.
-    -   `walking/IMU/[algo]/IKResults/...`: OpenSense results for comparison.
+## Setup
 
-## Scripts
+```bash
+# Create environment (using uv)
+uv venv
+source .venv/bin/activate
+uv pip install -r requirements.txt
 
-### 1. `run_estimation_knee.py`
-Estimates the **knee** joint angle.
-
-**Key Functions:**
--   `estimate_joint_axes`: Estimates the knee joint axis using the Olsson method.
--   `run_vqf_olsson`: Calculates knee angle using VQF orientation and the estimated axis.
--   `run_vqf_olsson_heading_correction`: Applies heading correction to the VQF+Olsson estimate (currently experimental/tuning).
--   `run_opensense`: Loads and plots OpenSense results for comparison.
--   `run_kf_gframe_with_auto_r`: Load data and calculate the RELATIVE IMU orientation and transfer to one aligned joint angle.
-
-### 2. `run_estimation_ankle.py`
-Estimates the **ankle** joint angle.
-
-**Key Functions:**
--   Similar structure to the knee script, but adapted for Tibia and Calcaneus segments.
+# Download dataset (~5.5GB from SimTK)
+python download_simtk_dataset.py
+```
 
 ## Usage
 
-Run the scripts from the command line. You can specify which method(s) to run and whether to show plots.
-
-**Basic Usage:**
 ```bash
-python run_estimation_knee.py
-python run_estimation_ankle.py
+# Run all methods on a single subject
+python run_estimation.py --joint knee --subject Subject08
+
+# Run specific method
+python run_estimation.py --joint ankle --method kf_gframe
+
+# Run on all valid subjects with parallel processing
+python run_estimation.py --joint knee --method all --subject all --workers 4
+
+# Disable interactive plots
+python run_estimation.py --joint knee --no-plot
 ```
 
-**Options:**
--   `--method`: Choose the estimation method.
-    -   `vqf_olsson`: Run VQF + Olsson.
-    -   `vqf_olsson_heading_correction`: Run VQF + Olsson + Heading Correction (experimental).
-    -   `opensense`: Run OpenSense comparison.
-    -   `kf_gframe`: Run Ive's method.
-    -   `all`: Run all methods (default).
--   `--no-plot`: Disable interactive plotting (plots are still saved to `plots/`).
+**Arguments:**
+- `--joint`: `knee` or `ankle`
+- `--method`: `vqf_olsson`, `vqf_olsson_heading_correction`, `opensense`, `kf_gframe`, `vqf_opensim`, or `all`
+- `--subject`: `Subject01`-`Subject11` or `all`
+- `--workers`: Number of parallel workers (default: 4)
+- `--no-plot`: Save plots without displaying
 
-**Examples:**
-```bash
-# Run only VQF + Olsson method for knee
-python run_estimation_knee.py --method vqf_olsson
+## Data Structure
 
-# Run all methods for ankle without opening plot windows
-python run_estimation_ankle.py --no-plot
+Data is expected in `data/SubjectXX/`:
+```
+data/Subject08/
+├── walking/
+│   ├── IMU/
+│   │   ├── xsens/LowerExtremity/*.txt    # Raw IMU data (100 Hz)
+│   │   ├── myIMUMappings_walking.xml     # Sensor-to-segment mappings
+│   │   ├── xsens/IKResults/              # OpenSense Xsens results
+│   │   ├── madgwick/IKResults/           # OpenSense Madgwick results
+│   │   └── mahony/IKResults/             # OpenSense Mahony results
+│   └── Mocap/
+│       └── ikResults/walking_IK.mot      # Motion capture ground truth
 ```
 
-## Current Status & Known Issues
+## Project Structure
 
--   **Heading Correction**: The `vqf_olsson_heading_correction` method is implemented but may require parameter tuning (`tauDelta`, `tauBias`) for optimal performance. It currently might show over-correction or drift in some cases.
--   **Olsson Method**: The joint axis estimation (Olsson) is working but performance depends on the quality of the motion data (excitation).
-    -   **TODO**: The Olsson method currently does not perform well for the **ankle** joint. This needs further evaluation or a potential fix.
--   **Synchronization**: There is an unknown time offset between the IMU and Ground Truth (Mocap) data. Currently, a cross-correlation approach is used to align the signals, but a systematic synchronization method using timestamps is missing.
+```
+├── run_estimation.py      # Unified entry point
+├── utils.py               # Data loading, signal alignment
+├── calTools.py            # Quaternion operations, Jacobians, filters
+├── constants.py           # Physical constants
+├── plotting.py            # Visualization
+├── methods/
+│   ├── vqf_olsson.py      # VQF+Olsson implementation
+│   ├── kf_gframe.py       # Kalman filter implementation
+│   └── shared.py          # Common utilities
+├── plots/                 # Generated comparison plots
+└── results/               # RMSE summary CSVs
+```
 
+## Valid Subjects
+
+7 subjects are valid for analysis: Subject01, Subject02, Subject03, Subject04, Subject07, Subject08, Subject11
+
+**Excluded subjects:**
+- Subject05, Subject09: Malformed XML
+- Subject06, Subject10: IMU data at 40 Hz (expected 100 Hz)
+
+## Key Libraries
+
+- [qmt](https://github.com/dlaidig/qmt) - Quaternion math toolbox (VQF, Olsson, heading correction)
+- numpy, scipy - Numerical processing
+- matplotlib - Visualization
+
+## Known Issues
+
+- **VQF+Olsson**: Poor performance, especially on ankle joint; under investigation
