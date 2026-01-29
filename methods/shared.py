@@ -26,9 +26,14 @@ def olsson_estimate_hinge_joint_axes(acc_femur, acc_tibia, gyr_femur, gyr_tibia)
 
 
 def calculate_joint_angle(q_rel, jhat_prox):
-    """Calculate joint angle using quaternion projection onto estimated axis."""
-    q_twist = qmt.quatProject(q_rel, jhat_prox)['projQuat']
-    angle_mag = qmt.quatAngle(q_twist)
-    twist_axis = qmt.quatAxis(q_twist)
-    signs = np.sign(np.sum(twist_axis * jhat_prox, axis=1))
-    return np.degrees(angle_mag * signs)
+    """Calculate joint angle from relative quaternion and joint axis.
+
+    Uses qmt.quatProject for swing-twist decomposition to extract
+    the rotation angle around the specified joint axis.
+
+    Args:
+        q_rel: Relative quaternion (N, 4) in [w, x, y, z] convention
+        jhat_prox: Unit joint axis in proximal sensor frame (3,)
+    """
+    angle_rad = qmt.quatProject(q_rel, jhat_prox)['projAngle']
+    return np.degrees(np.unwrap(angle_rad))
