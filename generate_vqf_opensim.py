@@ -93,11 +93,12 @@ def run_opensim_ik(subject_id, orientations_sto, method='vqf', low_feet_weights=
     subject_path = Path(f'data/{subject_id}/walking')
     model_path = subject_path / 'IMU' / 'madgwick' / 'model_Rajagopal2015_calibrated.osim'
 
-    # Use separate output directory for madgwick validation to avoid overwriting originals
+    # Match directory structure of other methods: IKResults/{weighting}/walking_IK.mot
+    weighting_dir = 'IKWithErrorsExtremeLowFeetWeights' if low_feet_weights else 'IKWithErrorsUniformWeights'
     if method == 'madgwick':
-        output_dir = subject_path / 'IMU' / 'madgwick_reproduced' / 'IKResults'
+        output_dir = subject_path / 'IMU' / 'madgwick_reproduced' / 'IKResults' / weighting_dir
     else:
-        output_dir = subject_path / 'IMU' / method / 'IKResults'
+        output_dir = subject_path / 'IMU' / method / 'IKResults' / weighting_dir
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Create and configure IMU IK tool

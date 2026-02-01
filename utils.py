@@ -68,34 +68,33 @@ def get_sensor_mappings(xml_path):
     return mappings
 
 
-def load_opensense_results(subject_path, gt_column='knee_angle_r', algorithm=None):
+def load_opensense_results(subject_path, gt_column='knee_angle_r', algorithm=None,
+                           weighting='IKWithErrorsUniformWeights'):
     """Load pre-calculated results from OpenSense algorithms.
 
     Args:
         subject_path: Path to subject data directory
         gt_column: Column name to extract (default: 'knee_angle_r')
-        algorithm: Single algorithm ('xsens', 'madgwick', 'mahony') or None for all
+        algorithm: Single algorithm ('xsens', 'madgwick', 'mahony', 'vqf') or None for all
+        weighting: IK weighting scheme ('IKWithErrorsUniformWeights' or 'IKWithErrorsExtremeLowFeetWeights')
 
     Returns:
         dict mapping algorithm name to angle values (np.ndarray)
     """
     from pathlib import Path
     subject_path = Path(subject_path)
-    algos = [algorithm] if algorithm else ['xsens', 'madgwick', 'mahony']
+    algos = [algorithm] if algorithm else ['vqf', 'xsens', 'madgwick', 'mahony']
     results = {}
 
     for algo in algos:
-        if algo not in ('xsens', 'madgwick', 'mahony'):
+        if algo not in ('xsens', 'madgwick', 'mahony', 'vqf'):
             print(f"Unknown algorithm: {algo}")
             continue
 
-        path = subject_path / 'IMU' / algo / 'IKResults' / 'IKWithErrorsUniformWeights' / 'walking_IK.mot'
-        if not path.exists():
-            path = subject_path / 'IMU' / algo / 'IKResults' / 'IKWithErrorsExtremeLowFeetWeights' / 'walking_IK.mot'
+        path = subject_path / 'IMU' / algo / 'IKResults' / weighting / 'walking_IK.mot'
 
         if not path.exists():
-            print(f"OpenSense results not found for {algo}")
-            continue
+            continue  # Silently skip missing algorithms
 
         df = load_mot(path)
         if gt_column not in df.columns:
@@ -319,11 +318,16 @@ def find_vqf_opensim_file(subject_id):
     return None
 
 
-def find_vqf_ik_file(subject_id):
+def find_vqf_ik_file(subject_id, weighting='IKWithErrorsUniformWeights'):
     """Find generated VQF IK .mot file for subject. Returns Path or None."""
-    subject_path = Path(f'data/{subject_id}/walking/IMU/vqf/IKResults')
+    base_path = Path(f'data/{subject_id}/walking/IMU/vqf/IKResults')
+    # Check new structure first (with weighting subdirectory)
+    candidate = base_path / weighting / 'walking_IK.mot'
+    if candidate.exists():
+        return candidate
+    # Fall back to old structure (without weighting subdirectory)
     for name in ['walking_IK.mot', 'ik_walking_orientations.mot']:
-        candidate = subject_path / name
+        candidate = base_path / name
         if candidate.exists():
             return candidate
     return None

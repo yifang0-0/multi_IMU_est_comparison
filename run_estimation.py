@@ -21,7 +21,7 @@ VALID_SUBJECTS = ['Subject02', 'Subject03', 'Subject04', 'Subject08']
 from utils import (
     load_imu_data, get_sensor_mappings,
     find_best_shift, align_signals,
-    load_opensense_results, find_vqf_opensim_file, find_vqf_ik_file,
+    load_opensense_results, find_vqf_opensim_file,
     load_offset, save_offset, compute_raw_signal_offset, validate_offset
 )
 from methods.shared import load_mot, calculate_joint_angle
@@ -218,16 +218,20 @@ def process_kf_gframe_optimized(data, errors_dict, angles_dict=None):
 
 
 def process_opensense(data, errors_dict, angles_dict=None):
-    """Load OpenSense results and add errors to dict.
+    """Load OpenSense IK results (VQF, Madgwick, Mahony, Xsens) and add errors to dict.
 
     Note: OpenSense results are already temporally aligned with mocap,
     so we use gt_original (no IMU-mocap offset applied).
     """
-    print("\n=== OpenSense Comparison ===")
+    print("\n=== OpenSense IK Comparison ===")
     gt = data['gt_original']
-    results = load_opensense_results(data['subject_path'], data['joint_config']['gt_column'])
+    results = load_opensense_results(
+        data['subject_path'],
+        data['joint_config']['gt_column'],
+        weighting='IKWithErrorsUniformWeights'
+    )
     for algo, angle_deg in results.items():
-        _eval_precomputed(algo.capitalize(), angle_deg, gt, errors_dict, angles_dict)
+        _eval_precomputed(algo.upper(), angle_deg, gt, errors_dict, angles_dict)
 
 
 def process_vqf_opensim(data, errors_dict, angles_dict=None):
@@ -252,23 +256,6 @@ def process_vqf_opensim(data, errors_dict, angles_dict=None):
     print(f"VQF-OpenSim - RMSE: {rmse:.2f} deg (offset: {offset})")
     if angles_dict is not None:
         angles_dict['VQF-OpenSim'] = (est, gt_aligned)
-
-
-def process_vqf_ik(data, errors_dict, angles_dict=None):
-    """Load generated VQF IK results and align to ground truth."""
-    vqf_file = find_vqf_ik_file(data['subject_id'])
-    if not vqf_file:
-        print("\n=== VQF-IK: No file found ===")
-        return
-
-    print("\n=== VQF-IK (generated) ===")
-    gt_col = data['joint_config']['gt_column']
-    vqf_angle = load_mot(vqf_file)[gt_col].values
-    gt = data['gt_original']
-    offset = data['alignment_offset']
-
-    est, gt_aligned = align_signals(vqf_angle, gt, offset)
-    _eval_precomputed('VQF-IK', est, gt_aligned, errors_dict, angles_dict)
 
 
 def run_single_subject(joint, method, subject_id, no_plot=True, export=False):
@@ -303,9 +290,6 @@ def run_single_subject(joint, method, subject_id, no_plot=True, export=False):
 
     if method in ('vqf_opensim', 'all'):
         process_vqf_opensim(data, errors_dict, angles_dict)
-
-    if method == 'vqf_ik':  # Not in 'all' - only available for subjects with generated IK
-        process_vqf_ik(data, errors_dict, angles_dict)
 
     # Export time series if requested
     if export and angles_dict:
@@ -403,7 +387,7 @@ def main():
     parser.add_argument('--method', type=str, default='all',
                         choices=['vqf_olsson', 'vqf_olsson_heading_correction',
                                  'opensense', 'kf_gframe_olsson', 'kf_gframe_optimized',
-                                 'vqf_opensim', 'vqf_ik', 'all'],
+                                 'vqf_opensim', 'all'],
                         help='Estimation method (default: all)')
     parser.add_argument('--subject', type=str, default='Subject08',
                         help='Subject ID or "all" for all valid subjects (default: Subject08)')
