@@ -21,7 +21,7 @@ def plot_time_series_error(errors_dict, joint_name='Joint', save_path=None, show
     ax.set_xlabel('Sample', fontsize=13, fontweight='bold')
     ax.set_ylabel('Absolute Error (degrees)', fontsize=13, fontweight='bold')
     ax.legend(loc='upper right', fontsize=11)
-    ax.set_xlim(xlim)
+    # ax.set_xlim(xlim)
     ax.grid(True, alpha=0.3, linestyle='--', linewidth=0.8)
 
     stats_lines = [f"{label}: RMSE={np.sqrt(np.mean(np.array(errors_dict[label])**2)):.2f}"
@@ -31,8 +31,8 @@ def plot_time_series_error(errors_dict, joint_name='Joint', save_path=None, show
 
     plt.tight_layout()
     if save_path is None:
-        save_path = f'plots/time_series_error_{joint_name.lower()}.png'
-    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        save_path = f'plots/time_series_error_{joint_name.lower()}.pdf'
+    plt.savefig(save_path, bbox_inches='tight')
     print(f"Time series error plot saved to {save_path}")
     if show:
         plt.show()
@@ -65,9 +65,36 @@ def plot_error_comparison(errors_dict, joint_name='Joint', save_path=None, show=
     plt.xticks(rotation=15, ha='right', fontsize=11)
     plt.tight_layout()
     if save_path is None:
-        save_path = f'plots/error_comparison_{joint_name.lower()}.png'
-    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        save_path = f'plots/error_comparison_{joint_name.lower()}.pdf'
+    plt.savefig(save_path, bbox_inches='tight')
     print(f"Error comparison plot saved to {save_path}")
+    if show:
+        plt.show()
+    plt.close()
+
+
+def plot_method_comparison_bars(methods, knee_rmse, ankle_rmse, save_path=None, show=True):
+    """Plot grouped bar chart comparing methods across knee and ankle joints."""
+    x = np.arange(len(methods))
+    width = 0.35
+
+    _, ax = plt.subplots(figsize=(10, 6))
+    ax.bar(x - width/2, knee_rmse, width, label='Knee Error (RMSE)', color='#3498db')
+    ax.bar(x + width/2, ankle_rmse, width, label='Ankle Error (RMSE)', color='#e67e22')
+
+    ax.set_ylabel('RMSE (degrees)', fontsize=13, fontweight='bold')
+    ax.set_title('Joint Angle Estimation Method Comparison', fontsize=16, fontweight='bold', pad=20)
+    ax.set_xticks(x)
+    ax.set_xticklabels(methods, fontsize=11)
+    ax.legend(loc='upper right', fontsize=11)
+    ax.grid(True, axis='y', alpha=0.3, linestyle='--')
+    ax.set_ylim(0, None)
+
+    plt.tight_layout()
+    if save_path is None:
+        save_path = 'plots/method_comparison.pdf'
+    plt.savefig(save_path, bbox_inches='tight')
+    print(f"Method comparison plot saved to {save_path}")
     if show:
         plt.show()
     plt.close()
