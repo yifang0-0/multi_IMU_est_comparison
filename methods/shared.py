@@ -36,4 +36,4 @@ def calculate_joint_angle(q_rel, jhat_prox):
         jhat_prox: Unit joint axis in proximal sensor frame (3,)
     """
     angle_rad = qmt.quatProject(q_rel, jhat_prox)['projAngle']
-    return np.degrees(np.unwrap(angle_rad))
+    return np.degrees(angle_rad)
