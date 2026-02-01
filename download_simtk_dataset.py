@@ -2,23 +2,41 @@
 """Download the SimTK IMU dataset (study20-latest.tar.gz, ~5.5GB)."""
 
 import os
+import re
 import tarfile
 import requests
 from tqdm import tqdm
+from urllib.parse import parse_qs, urlparse
 
 _URL = "https://datashare.simtk.org/apps/browse/download/sendRelease.php"
 _FILENAME = "study20-latest.tar.gz"
-_PARAMS = {
-    "groupid": "2164",
-    "userid": "0",
-    "studyid": "20",
-    "token": "$2y$10$LmcsiN6v44CdqRbgKUR7ze4OVHr9/gSCep4RZABfBMXAumMTr4o6S",
-}
+_GROUP_ID = "2164"
+_STUDY_ID = "20"
+
+
+def _get_download_token():
+    """Fetch a fresh download token from SimTK."""
+    resp = requests.post(
+        "https://simtk.org/plugins/datashare/view.php",
+        data={"id": _GROUP_ID, "pluginname": "datashare", "studyid": _STUDY_ID},
+    )
+    resp.raise_for_status()
+    match = re.search(r'<iframe[^>]+src="([^"]+)"', resp.text)
+    if not match:
+        raise RuntimeError("Could not find datashare iframe in response")
+    iframe_url = match.group(1)
+    params = parse_qs(urlparse(iframe_url).query)
+    if "token" not in params:
+        raise RuntimeError("Token not found in iframe URL")
+    return params["token"][0]
 
 
 def download_and_extract_simtk_dataset():
     """Download, extract, and clean up the SimTK IMU dataset (~5.5GB)."""
-    with requests.get(_URL, params=_PARAMS, stream=True) as resp:
+    print("Fetching download token...")
+    token = _get_download_token()
+    params = {"groupid": _GROUP_ID, "userid": "0", "studyid": _STUDY_ID, "token": token}
+    with requests.get(_URL, params=params, stream=True) as resp:
         resp.raise_for_status()
         total = int(resp.headers.get("content-length", 0))
         with open(_FILENAME, "wb") as f, tqdm(total=total, unit="B", unit_scale=True) as pbar:
