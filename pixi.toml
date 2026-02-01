@@ -1,0 +1,21 @@
+[workspace]
+authors = ["Daniel Weber <daniel.om.weber@gmail.com>"]
+channels = ["conda-forge", "opensim-org"]
+name = "multi_IMU_est_comparison"
+platforms = ["osx-arm64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]
+opensim = ">=4.5.2,<5"
+numpy = "*"
+pandas = "*"
+matplotlib = "*"
+scipy = "*"
+seaborn = "*"
+tqdm = "*"
+requests = "*"
+
+[pypi-dependencies]
+qmt = "*"

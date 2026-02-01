@@ -319,6 +319,16 @@ def find_vqf_opensim_file(subject_id):
     return None
 
 
+def find_vqf_ik_file(subject_id):
+    """Find generated VQF IK .mot file for subject. Returns Path or None."""
+    subject_path = Path(f'data/{subject_id}/walking/IMU/vqf/IKResults')
+    for name in ['walking_IK.mot', 'ik_walking_orientations.mot']:
+        candidate = subject_path / name
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def load_offset(method, subject_id, gt_column):
     """Load cached offset from JSON. Returns int or None."""
     path = Path('offsets.json')
@@ -334,3 +344,84 @@ def save_offset(method, subject_id, gt_column, offset):
     offsets = json.loads(path.read_text()) if path.exists() else {}
     offsets[f"{method}_{subject_id}_{gt_column}"] = int(offset)  # Convert numpy int to Python int
     path.write_text(json.dumps(offsets, indent=2))
+
+
+# =============================================================================
+# OpenSim File Writing
+# =============================================================================
+
+def write_orientations_sto(output_path, time, quaternions, sensor_names, data_rate=100):
+    """Write quaternion orientations to OpenSim .sto format.
+
+    Args:
+        output_path: Path for output .sto file
+        time: Time array (N,)
+        quaternions: Dict mapping sensor_name -> quaternions (N, 4) in w,x,y,z format
+        sensor_names: List of sensor names in desired column order
+        data_rate: Sampling rate in Hz
+    """
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(output_path, 'w') as f:
+        f.write(f'DataRate={data_rate:.6f}\n')
+        f.write('DataType=Quaternion\n')
+        f.write('version=3\n')
+        f.write('OpenSimVersion=4.4\n')
+        f.write('endheader\n')
+
+        # Header row - only include sensors that have data
+        available_sensors = [s for s in sensor_names if s in quaternions]
+        f.write('time\t' + '\t'.join(available_sensors) + '\n')
+
+        # Data rows
+        for i in range(len(time)):
+            row = [f'{time[i]}']
+            for name in available_sensors:
+                q = quaternions[name][i]  # w, x, y, z
+                row.append(f'{q[0]},{q[1]},{q[2]},{q[3]}')
+            f.write('\t'.join(row) + '\n')
+
+
+def read_orientations_sto(file_path):
+    """Read quaternion orientations from OpenSim .sto format.
+
+    Returns:
+        time: Time array (N,)
+        quaternions: Dict mapping sensor_name -> quaternions (N, 4) in w,x,y,z format
+        data_rate: Sampling rate in Hz
+    """
+    with open(file_path, 'r') as f:
+        lines = f.readlines()
+
+    # Parse header
+    data_rate = 100
+    header_end = 0
+    for i, line in enumerate(lines):
+        if line.startswith('DataRate='):
+            data_rate = int(float(line.split('=')[1]))
+        if line.strip() == 'endheader':
+            header_end = i + 1
+            break
+
+    # Parse column names
+    col_names = lines[header_end].strip().split('\t')
+    sensor_names = col_names[1:]  # Skip 'time'
+
+    # Parse data
+    time = []
+    quaternions = {name: [] for name in sensor_names}
+
+    for line in lines[header_end + 1:]:
+        parts = line.strip().split('\t')
+        if not parts or not parts[0]:
+            continue
+        time.append(float(parts[0]))
+        for j, name in enumerate(sensor_names):
+            q_parts = parts[j + 1].split(',')
+            quaternions[name].append([float(x) for x in q_parts])
+
+    time = np.array(time)
+    quaternions = {name: np.array(q) for name, q in quaternions.items()}
+
+    return time, quaternions, data_rate
