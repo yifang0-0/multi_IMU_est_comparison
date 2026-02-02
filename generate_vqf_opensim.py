@@ -21,7 +21,7 @@ Usage:
     python generate_vqf_opensim.py --run-ik --subject all    # Parallel IK for all subjects
     python generate_vqf_opensim.py --method madgwick --run-ik  # Use existing Madgwick
     python generate_vqf_opensim.py --method madgwick --validate  # Compare to existing
-    python generate_vqf_opensim.py --run-ik --start-time 50 --end-time 60  # Short test
+    python generate_vqf_opensim.py --run-ik --both-weights  # Run both weight configs
 """
 import numpy as np
 import argparse
@@ -188,7 +188,7 @@ def apply_heading_correction(subject_id, orientations_sto, posed_model_path):
 
 
 def run_opensim_ik(subject_id, orientations_sto, method='vqf', low_feet_weights=False,
-                   model_path=None, start_time=None, end_time=None):
+                   model_path=None):
     """Run OpenSim IMU Inverse Kinematics on orientation data."""
     import opensim as osim
 
@@ -215,12 +215,6 @@ def run_opensim_ik(subject_id, orientations_sto, method='vqf', low_feet_weights=
 
     # Set accuracy (matches existing setup XML)
     ik_tool.set_accuracy(1e-6)
-
-    # Set time range if specified
-    if start_time is not None:
-        ik_tool.setStartTime(start_time)
-    if end_time is not None:
-        ik_tool.setEndTime(end_time)
 
     # Set orientation weights (low feet weights improves ankle angle estimation)
     if low_feet_weights:
@@ -270,7 +264,7 @@ def validate_results(new_mot, existing_mot):
 
 def process_subject(args_tuple):
     """Process a single subject (worker function for multiprocessing)."""
-    subj, method, run_ik, _validate, low_feet_weights, start_time, end_time = args_tuple
+    subj, method, run_ik, _validate, low_feet_weights = args_tuple
     results = {'subject': subj, 'status': 'success', 'messages': []}
 
     try:
@@ -314,8 +308,7 @@ def process_subject(args_tuple):
         if run_ik:
             mot_path = run_opensim_ik(subj, ik_orientations, method=method,
                                        low_feet_weights=low_feet_weights,
-                                       model_path=ik_model,
-                                       start_time=start_time, end_time=end_time)
+                                       model_path=ik_model)
             results['messages'].append(f"IK output: {mot_path}")
             results['mot_path'] = str(mot_path)
 
@@ -348,10 +341,8 @@ def main():
                         help='Run sequentially instead of parallel (for debugging)')
     parser.add_argument('--low-feet-weights', action='store_true',
                         help='Use low orientation weights for foot sensors (0.01)')
-    parser.add_argument('--start-time', type=float, default=None,
-                        help='Start time in seconds for IK (for faster testing)')
-    parser.add_argument('--end-time', type=float, default=None,
-                        help='End time in seconds for IK (for faster testing)')
+    parser.add_argument('--both-weights', action='store_true',
+                        help='Run IK with both uniform and low feet weights in parallel')
     args = parser.parse_args()
 
     subjects = VALID_SUBJECTS if args.subject == 'all' else [args.subject]
@@ -361,15 +352,17 @@ def main():
     else:
         print(f"Using existing Madgwick orientations for: {', '.join(subjects)}")
 
-    # Use parallel processing for multiple subjects with IK
-    use_parallel = len(subjects) > 1 and args.run_ik and not args.sequential
+    # Determine weight configurations to run
+    weight_configs = [False, True] if args.both_weights else [args.low_feet_weights]
+
+    # Use parallel processing for multiple subjects with IK or both weight configs
+    use_parallel = (len(subjects) > 1 or args.both_weights) and args.run_ik and not args.sequential
 
     if use_parallel:
-        n_workers = min(len(subjects), cpu_count())
-        print(f"Running IK in parallel with {n_workers} workers...\n")
-
-        work_items = [(subj, args.method, args.run_ik, args.validate, args.low_feet_weights,
-                       args.start_time, args.end_time) for subj in subjects]
+        work_items = [(subj, args.method, args.run_ik, args.validate, weights)
+                      for subj in subjects for weights in weight_configs]
+        n_workers = min(len(work_items), cpu_count())
+        print(f"Running IK in parallel with {n_workers} workers ({len(work_items)} tasks)...\n")
 
         with Pool(n_workers) as pool:
             results = pool.map(process_subject, work_items)
@@ -429,12 +422,13 @@ def main():
                     ik_model = None  # Use default
 
                 if args.run_ik:
-                    print("  Running OpenSim IMU IK...")
-                    mot_path = run_opensim_ik(subj, ik_orientations, method=args.method,
-                                               low_feet_weights=args.low_feet_weights,
-                                               model_path=ik_model,
-                                               start_time=args.start_time, end_time=args.end_time)
-                    print(f"  IK output: {mot_path}")
+                    for low_feet_weights in weight_configs:
+                        weight_label = "low feet weights" if low_feet_weights else "uniform weights"
+                        print(f"  Running OpenSim IMU IK ({weight_label})...")
+                        mot_path = run_opensim_ik(subj, ik_orientations, method=args.method,
+                                                   low_feet_weights=low_feet_weights,
+                                                   model_path=ik_model)
+                        print(f"  IK output: {mot_path}")
 
                     # Auto-validate for madgwick
                     if args.method == 'madgwick':
