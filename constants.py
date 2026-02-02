@@ -15,3 +15,6 @@ N_STILL = 40      # Stationary samples for noise estimation
 COV_W_SCALE = 1e-2              # Process noise
 COV_LNK_SCALE = 0.35**2 * 10    # Measurement noise (link constraint)
 ACC_OUTLIER_THRESHOLD = 300     # m/s² - reject samples above this
+
+# Valid subjects for analysis (excludes subjects with data issues)
+VALID_SUBJECTS = ['Subject02', 'Subject03', 'Subject04', 'Subject08']

@@ -5,6 +5,12 @@ This script runs VQF orientation estimation on all IMU sensors and outputs
 .sto files compatible with OpenSim's IMU IK tool. Optionally runs OpenSim
 IMU IK to generate joint angle .mot files.
 
+For VQF method, follows the complete OpenSense calibration workflow:
+1. Generate VQF orientations
+2. Run IMUPlacer calibration with VQF orientations
+3. Apply heading correction
+4. Run IK with VQF-calibrated model and corrected orientations
+
 Supports using existing Madgwick orientations for validation against
 precomputed IK results.
 
@@ -15,6 +21,7 @@ Usage:
     python generate_vqf_opensim.py --run-ik --subject all    # Parallel IK for all subjects
     python generate_vqf_opensim.py --method madgwick --run-ik  # Use existing Madgwick
     python generate_vqf_opensim.py --method madgwick --validate  # Compare to existing
+    python generate_vqf_opensim.py --run-ik --start-time 50 --end-time 60  # Short test
 """
 import numpy as np
 import argparse
@@ -23,22 +30,38 @@ from pathlib import Path
 from multiprocessing import Pool, cpu_count
 import qmt
 
-from utils import load_imu_data, get_sensor_mappings, write_orientations_sto, read_orientations_sto
+from utils import load_imu_data, get_sensor_mappings, write_orientations_sto, read_orientations_sto, get_aligned_time_range
 from methods.shared import load_mot
-
-VALID_SUBJECTS = ['Subject02', 'Subject03', 'Subject04', 'Subject08']
+from constants import VALID_SUBJECTS
 
 # Standard sensor names in OpenSim order
 SENSOR_NAMES = ['pelvis_imu', 'femur_r_imu', 'femur_l_imu',
                 'tibia_r_imu', 'tibia_l_imu', 'calcn_r_imu']
 
 
-def generate_vqf_orientations(subject_id):
-    """Generate VQF orientations for all sensors and write to .sto file."""
+def generate_vqf_orientations(subject_id, align_to_mocap=True):
+    """Generate VQF orientations for all sensors and write to .sto file.
+
+    Args:
+        subject_id: Subject identifier (e.g., 'Subject03')
+        align_to_mocap: If True, trim IMU data to match ground truth duration.
+            This prevents heading drift during pre-recording periods.
+    """
     subject_path = Path(f'data/{subject_id}/walking')
     mappings = get_sensor_mappings(subject_path / 'IMU' / 'myIMUMappings_walking.xml')
     imu_dir = subject_path / 'IMU' / 'xsens' / 'LowerExtremity'
     fs = 100.0
+
+    # Get aligned time range (start and end truncation to match GT duration)
+    trim_start = 0
+    trim_end = None  # None means no end truncation
+    if align_to_mocap:
+        time_range = get_aligned_time_range(subject_path, fs)
+        trim_start = time_range['imu_start']
+        trim_end = time_range['imu_end']
+        if trim_start > 0 or trim_end is not None:
+            duration = (trim_end - trim_start) / fs if trim_end else 'unknown'
+            print(f"  Aligning to GT: samples [{trim_start}:{trim_end}] ({duration:.1f}s)")
 
     quaternions = {}
     time = None
@@ -61,6 +84,12 @@ def generate_vqf_orientations(subject_id):
         acc = imu_df[['Acc_X', 'Acc_Y', 'Acc_Z']].values
         gyr = imu_df[['Gyr_X', 'Gyr_Y', 'Gyr_Z']].values
         mag = imu_df[['Mag_X', 'Mag_Y', 'Mag_Z']].values
+
+        # Trim to aligned time range (both start and end)
+        if trim_start > 0 or trim_end is not None:
+            acc = acc[trim_start:trim_end]
+            gyr = gyr[trim_start:trim_end]
+            mag = mag[trim_start:trim_end]
 
         # Run VQF orientation estimation with magnetometer for Earth-fixed heading
         q = qmt.oriEstVQF(gyr, acc, mag=mag, params={'Ts': 1.0/fs})
@@ -86,12 +115,86 @@ def generate_vqf_orientations(subject_id):
     return output_path
 
 
-def run_opensim_ik(subject_id, orientations_sto, method='vqf', low_feet_weights=False):
+def run_imu_placer(subject_id, orientations_sto, posed_model_path):
+    """Run IMUPlacer to create calibrated model with VQF orientations."""
+    import opensim as osim
+
+    subject_path = Path(f'data/{subject_id}/walking')
+    output_dir = subject_path / 'IMU' / 'vqf'
+    output_dir.mkdir(parents=True, exist_ok=True)
+    calibrated_model_path = output_dir / 'model_Rajagopal2015_calibrated.osim'
+
+    imu_placer = osim.IMUPlacer()
+    imu_placer.set_model_file(str(posed_model_path))
+    imu_placer.set_orientation_file_for_calibration(str(orientations_sto))
+    imu_placer.set_base_imu_label('pelvis_imu')
+    imu_placer.set_base_heading_axis('z')
+    imu_placer.set_sensor_to_opensim_rotations(osim.Vec3(-np.pi/2, 0, 0))
+
+    imu_placer.run(False)  # visualize=False
+
+    calibrated_model = imu_placer.getCalibratedModel()
+    calibrated_model.printToXML(str(calibrated_model_path))
+
+    print(f"  IMUPlacer output: {calibrated_model_path}")
+    return calibrated_model_path
+
+
+def apply_heading_correction(subject_id, orientations_sto, posed_model_path):
+    """Apply heading correction to orientation data."""
+    import opensim as osim
+
+    subject_path = Path(f'data/{subject_id}/walking')
+    marker_ik_path = subject_path / 'Mocap' / 'ikResults' / 'walking_IK.mot'
+    output_sto = subject_path / 'IMU' / 'vqf' / 'walking_orientations_hc.sto'
+
+    # Load model and get pelvis rotation from marker IK
+    model = osim.Model(str(posed_model_path))
+    state = model.initSystem()
+    model.realizePosition(state)
+
+    marker_motion = osim.TimeSeriesTable(str(marker_ik_path))
+    col_idx = marker_motion.getColumnIndex('pelvis_rotation')
+    pelvis_rotation = marker_motion.getRowAtIndex(0)[col_idx]
+
+    # Load orientations and apply sensor-to-opensim rotation for heading computation
+    osense = osim.OpenSenseUtilities()
+    oTable = osim.TimeSeriesTableQuaternion(str(orientations_sto))
+
+    R_sensor = osim.Rotation()
+    R_sensor.setRotationFromAngleAboutX(-np.pi/2)
+    osense.rotateOrientationTable(oTable, R_sensor)
+
+    # Compute heading correction
+    heading_axis = osim.CoordinateDirection(osim.CoordinateAxis(2), 1)  # +Z
+    correction_vec = osim.OpenSenseUtilities.computeHeadingCorrection(
+        model, state, oTable, 'pelvis_imu', heading_axis)
+    computed_correction = correction_vec.get(1) * 180 / np.pi  # to degrees
+
+    # Apply full correction (computed - pelvis rotation from marker IK)
+    angular_correction = computed_correction - pelvis_rotation
+
+    # Reload original orientations and apply Z-rotation
+    oTable_final = osim.TimeSeriesTableQuaternion(str(orientations_sto))
+    R_heading = osim.Rotation()
+    R_heading.setRotationFromAngleAboutZ(np.radians(angular_correction))
+    osense.rotateOrientationTable(oTable_final, R_heading)
+
+    osim.STOFileAdapterQuaternion.write(oTable_final, str(output_sto))
+
+    print(f"  Heading correction: {angular_correction:.2f}° (computed={computed_correction:.2f}°, pelvis={pelvis_rotation:.2f}°)")
+    print(f"  Output: {output_sto}")
+    return output_sto
+
+
+def run_opensim_ik(subject_id, orientations_sto, method='vqf', low_feet_weights=False,
+                   model_path=None, start_time=None, end_time=None):
     """Run OpenSim IMU Inverse Kinematics on orientation data."""
     import opensim as osim
 
     subject_path = Path(f'data/{subject_id}/walking')
-    model_path = subject_path / 'IMU' / 'madgwick' / 'model_Rajagopal2015_calibrated.osim'
+    if model_path is None:
+        model_path = subject_path / 'IMU' / 'madgwick' / 'model_Rajagopal2015_calibrated.osim'
 
     # Match directory structure of other methods: IKResults/{weighting}/walking_IK.mot
     weighting_dir = 'IKWithErrorsExtremeLowFeetWeights' if low_feet_weights else 'IKWithErrorsUniformWeights'
@@ -113,6 +216,12 @@ def run_opensim_ik(subject_id, orientations_sto, method='vqf', low_feet_weights=
     # Set accuracy (matches existing setup XML)
     ik_tool.set_accuracy(1e-6)
 
+    # Set time range if specified
+    if start_time is not None:
+        ik_tool.setStartTime(start_time)
+    if end_time is not None:
+        ik_tool.setEndTime(end_time)
+
     # Set orientation weights (low feet weights improves ankle angle estimation)
     if low_feet_weights:
         weights = {
@@ -129,8 +238,10 @@ def run_opensim_ik(subject_id, orientations_sto, method='vqf', low_feet_weights=
     ik_tool.run()
 
     # Rename output files to match madgwick convention
-    (output_dir / 'ik_walking_orientations.mot').rename(output_dir / 'walking_IK.mot')
-    (output_dir / 'ik_walking_orientations_orientationErrors.sto').rename(
+    # Output name is based on orientations file: ik_{basename}.mot
+    ori_basename = Path(orientations_sto).stem
+    (output_dir / f'ik_{ori_basename}.mot').rename(output_dir / 'walking_IK.mot')
+    (output_dir / f'ik_{ori_basename}_orientationErrors.sto').rename(
         output_dir / 'walking_orientationErrors.sto'
     )
 
@@ -159,15 +270,31 @@ def validate_results(new_mot, existing_mot):
 
 def process_subject(args_tuple):
     """Process a single subject (worker function for multiprocessing)."""
-    subj, method, run_ik, validate, low_feet_weights = args_tuple
+    subj, method, run_ik, _validate, low_feet_weights, start_time, end_time = args_tuple
     results = {'subject': subj, 'status': 'success', 'messages': []}
 
     try:
         subject_path = Path(f'data/{subj}/walking')
 
         if method == 'vqf':
+            # Step 1: Generate VQF orientations
             sto_path = generate_vqf_orientations(subj)
             results['messages'].append(f"Generated orientations: {sto_path}")
+
+            # Step 2: Use existing posed model (from marker IK, same across methods)
+            posed_model = subject_path / 'IMU' / 'madgwick' / 'model_Rajagopal2015_posed.osim'
+
+            # Step 3: Run IMUPlacer calibration with VQF orientations
+            calibrated_model = run_imu_placer(subj, sto_path, posed_model)
+            results['messages'].append(f"Calibrated model: {calibrated_model}")
+
+            # Step 4: Apply heading correction
+            corrected_sto = apply_heading_correction(subj, sto_path, posed_model)
+            results['messages'].append(f"Heading-corrected orientations: {corrected_sto}")
+
+            # Use corrected orientations and calibrated model for IK
+            ik_orientations = corrected_sto
+            ik_model = calibrated_model
         else:
             # Use existing Madgwick orientations - convert to compatible format
             madgwick_sto = subject_path / 'IMU' / 'madgwick' / 'walking_orientations.sto'
@@ -181,9 +308,14 @@ def process_subject(args_tuple):
             sto_path = subject_path / 'IMU' / 'madgwick_reproduced' / 'walking_orientations.sto'
             write_orientations_sto(sto_path, time, quaternions, list(quaternions.keys()), data_rate)
             results['messages'].append(f"Converted orientations: {sto_path}")
+            ik_orientations = sto_path
+            ik_model = None  # Use default
 
         if run_ik:
-            mot_path = run_opensim_ik(subj, sto_path, method=method, low_feet_weights=low_feet_weights)
+            mot_path = run_opensim_ik(subj, ik_orientations, method=method,
+                                       low_feet_weights=low_feet_weights,
+                                       model_path=ik_model,
+                                       start_time=start_time, end_time=end_time)
             results['messages'].append(f"IK output: {mot_path}")
             results['mot_path'] = str(mot_path)
 
@@ -216,6 +348,10 @@ def main():
                         help='Run sequentially instead of parallel (for debugging)')
     parser.add_argument('--low-feet-weights', action='store_true',
                         help='Use low orientation weights for foot sensors (0.01)')
+    parser.add_argument('--start-time', type=float, default=None,
+                        help='Start time in seconds for IK (for faster testing)')
+    parser.add_argument('--end-time', type=float, default=None,
+                        help='End time in seconds for IK (for faster testing)')
     args = parser.parse_args()
 
     subjects = VALID_SUBJECTS if args.subject == 'all' else [args.subject]
@@ -232,7 +368,8 @@ def main():
         n_workers = min(len(subjects), cpu_count())
         print(f"Running IK in parallel with {n_workers} workers...\n")
 
-        work_items = [(subj, args.method, args.run_ik, args.validate, args.low_feet_weights) for subj in subjects]
+        work_items = [(subj, args.method, args.run_ik, args.validate, args.low_feet_weights,
+                       args.start_time, args.end_time) for subj in subjects]
 
         with Pool(n_workers) as pool:
             results = pool.map(process_subject, work_items)
@@ -260,7 +397,21 @@ def main():
                 subject_path = Path(f'data/{subj}/walking')
 
                 if args.method == 'vqf':
+                    # Step 1: Generate VQF orientations
                     sto_path = generate_vqf_orientations(subj)
+
+                    # Step 2: Use existing posed model (from marker IK, same across methods)
+                    posed_model = subject_path / 'IMU' / 'madgwick' / 'model_Rajagopal2015_posed.osim'
+
+                    # Step 3: Run IMUPlacer calibration with VQF orientations
+                    calibrated_model = run_imu_placer(subj, sto_path, posed_model)
+
+                    # Step 4: Apply heading correction
+                    corrected_sto = apply_heading_correction(subj, sto_path, posed_model)
+
+                    # Use corrected orientations and calibrated model for IK
+                    ik_orientations = corrected_sto
+                    ik_model = calibrated_model
                 else:
                     # Use existing Madgwick orientations - convert to compatible format
                     madgwick_sto = subject_path / 'IMU' / 'madgwick' / 'walking_orientations.sto'
@@ -274,10 +425,15 @@ def main():
                     sto_path = subject_path / 'IMU' / 'madgwick_reproduced' / 'walking_orientations.sto'
                     write_orientations_sto(sto_path, time, quaternions, list(quaternions.keys()), data_rate)
                     print(f"  Converted to: {sto_path}")
+                    ik_orientations = sto_path
+                    ik_model = None  # Use default
 
                 if args.run_ik:
-                    print(f"  Running OpenSim IMU IK...")
-                    mot_path = run_opensim_ik(subj, sto_path, method=args.method, low_feet_weights=args.low_feet_weights)
+                    print("  Running OpenSim IMU IK...")
+                    mot_path = run_opensim_ik(subj, ik_orientations, method=args.method,
+                                               low_feet_weights=args.low_feet_weights,
+                                               model_path=ik_model,
+                                               start_time=args.start_time, end_time=args.end_time)
                     print(f"  IK output: {mot_path}")
 
                     # Auto-validate for madgwick
@@ -294,7 +450,7 @@ def main():
                         print(f"  Validating against: {existing_mot}")
                         validate_results(new_mot, existing_mot)
                     else:
-                        print(f"  Cannot validate: run with --run-ik first")
+                        print("  Cannot validate: run with --run-ik first")
 
             except Exception as e:
                 print(f"  Error: {e}")

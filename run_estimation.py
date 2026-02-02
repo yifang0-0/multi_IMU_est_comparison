@@ -16,14 +16,12 @@ from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import pandas as pd
 
-VALID_SUBJECTS = ['Subject02', 'Subject03', 'Subject04', 'Subject08']
-
 from utils import (
     load_imu_data, get_sensor_mappings,
-    find_best_shift, align_signals,
-    load_opensense_results, find_vqf_opensim_file, find_vqf_ik_file,
-    load_offset, save_offset, compute_raw_signal_offset, validate_offset
+    load_opensense_results, find_vqf_ik_file,
+    get_aligned_time_range
 )
+from constants import VALID_SUBJECTS
 from methods.shared import load_mot, calculate_joint_angle
 from methods import (
     run_vqf_olsson, run_vqf_olsson_heading_corrected,
@@ -32,26 +30,15 @@ from methods import (
 from plotting import plot_time_series_error, plot_error_comparison
 
 
-def _eval_imu_method(name, angle_deg, data, errors_dict, angles_dict=None):
-    """Evaluate IMU method against ground truth."""
-    gt = data['gt']
-    n = min(len(angle_deg), len(gt))
-    est, gt_a = angle_deg[:n], gt[:n]
-    rmse = np.sqrt(np.mean((gt_a - est)**2))
-    print(f"{name} - RMSE: {rmse:.2f} deg")
-    errors_dict[name] = np.abs(gt_a - est)
-    if angles_dict is not None:
-        angles_dict[name] = (est, gt_a)
-
-
-def _eval_precomputed(name, angle_deg, gt, errors_dict, angles_dict=None):
-    """Evaluate precomputed method (already time-synced with mocap)."""
-    n = min(len(angle_deg), len(gt))
-    error = np.abs(gt[:n] - angle_deg[:n])
+def _eval_method(name, est, gt, errors_dict, angles_dict=None):
+    """Evaluate estimated angles against ground truth."""
+    n = min(len(est), len(gt))
+    est, gt = est[:n], gt[:n]
+    error = np.abs(gt - est)
     errors_dict[name] = error
     print(f"{name} - RMSE: {np.sqrt(np.mean(error**2)):.2f} deg")
     if angles_dict is not None:
-        angles_dict[name] = (angle_deg[:n], gt[:n])
+        angles_dict[name] = (est, gt)
 
 
 def export_time_series(subject_id, joint, angles_dict, fs, output_dir='results/time_series'):
@@ -123,33 +110,21 @@ def prepare_data(joint_name, subject_id='Subject08'):
     gt_df = load_mot(subject_path / 'Mocap' / 'ikResults' / 'walking_IK.mot')
     gt = gt_df[joint_config['gt_column']].values
 
-    # Compute joint-independent alignment offset using raw signals (pelvis gyro)
-    offset = load_offset('raw_signal', subject_id, 'alignment')
-    if offset is None:
-        offset, corr, err = compute_raw_signal_offset(subject_path, fs)
-        if err:
-            print(f"Warning: Raw signal alignment failed ({err}), falling back to zero offset")
-            offset = 0
-        else:
-            save_offset('raw_signal', subject_id, 'alignment', offset)
-            print(f"Computed raw-signal alignment offset: {offset} samples ({offset/fs:.2f} sec), corr={corr:.3f}")
-    else:
-        print(f"Using cached raw-signal alignment offset: {offset} samples ({offset/fs:.2f} sec)")
-
     # Store original GT for precomputed methods (OpenSense, VQF-OpenSim)
     gt_original = gt
 
-    # Align IMU and GT based on offset sign
-    if offset > 0:
-        # Mocap leads: trim early GT samples
-        gt = gt[offset:]
-    elif offset < 0:
-        # IMU leads: trim early IMU samples
-        trim = -offset
-        acc_prox, gyr_prox = acc_prox[trim:], gyr_prox[trim:]
-        acc_dist, gyr_dist = acc_dist[trim:], gyr_dist[trim:]
+    # Get aligned time range using centralized utility
+    time_range = get_aligned_time_range(subject_path, fs)
+    offset = time_range['offset']
+    imu_start = time_range['imu_start']
+    imu_end = time_range['imu_end']
+    print(f"Alignment offset: {offset} samples ({offset/fs:.2f} sec)")
 
-    # Truncate to common length (all arrays must match)
+    # Trim IMU data to aligned range
+    acc_prox, gyr_prox = acc_prox[imu_start:imu_end], gyr_prox[imu_start:imu_end]
+    acc_dist, gyr_dist = acc_dist[imu_start:imu_end], gyr_dist[imu_start:imu_end]
+
+    # Truncate to common length (all arrays must match GT)
     n = min(len(acc_prox), len(acc_dist), len(gt))
     acc_prox, gyr_prox = acc_prox[:n], gyr_prox[:n]
     acc_dist, gyr_dist = acc_dist[:n], gyr_dist[:n]
@@ -186,7 +161,7 @@ def process_vqf_olsson(data, errors_dict, angles_dict=None):
     n = min(len(angle_deg), len(gt))
     if abs(np.corrcoef(angle_neg[:n], gt[:n])[0, 1]) > abs(np.corrcoef(angle_deg[:n], gt[:n])[0, 1]):
         angle_deg = angle_neg
-    _eval_imu_method('vqf+olsson', angle_deg, data, errors_dict, angles_dict)
+    _eval_method('vqf+olsson', angle_deg, data['gt'], errors_dict, angles_dict)
 
 
 def process_vqf_olsson_heading_correction(data, errors_dict, angles_dict=None):
@@ -195,7 +170,7 @@ def process_vqf_olsson_heading_correction(data, errors_dict, angles_dict=None):
     angle_deg = run_vqf_olsson_heading_corrected(
         data['acc_prox'], data['gyr_prox'], data['acc_dist'], data['gyr_dist'], data['fs']
     )
-    _eval_imu_method('vqf+olsson+heading_correction', angle_deg, data, errors_dict, angles_dict)
+    _eval_method('vqf+olsson+heading_correction', angle_deg, data['gt'], errors_dict, angles_dict)
 
 
 def process_kf_gframe_olsson(data, errors_dict, angles_dict=None):
@@ -204,7 +179,7 @@ def process_kf_gframe_olsson(data, errors_dict, angles_dict=None):
     angle_deg, r1_est, r2_est, _, _ = run_kf_gframe_olsson(
         data['acc_prox'], data['gyr_prox'], data['acc_dist'], data['gyr_dist'], data['fs']
     )
-    _eval_imu_method('kf_gframe_olsson', angle_deg, data, errors_dict, angles_dict)
+    _eval_method('kf_gframe_olsson', angle_deg, data['gt'], errors_dict, angles_dict)
 
 
 def process_kf_gframe_optimized(data, errors_dict, angles_dict=None):
@@ -214,7 +189,7 @@ def process_kf_gframe_optimized(data, errors_dict, angles_dict=None):
         data['acc_prox'], data['gyr_prox'], data['acc_dist'], data['gyr_dist'],
         data['fs'], gt_angles=data['gt'],calib_samples=3000
     )
-    _eval_imu_method('kf_gframe_optimized', angle_deg, data, errors_dict, angles_dict)
+    _eval_method('kf_gframe_optimized', angle_deg, data['gt'], errors_dict, angles_dict)
 
 
 def process_kf_gframe_opensim(data, errors_dict, angles_dict=None):
@@ -226,7 +201,7 @@ def process_kf_gframe_opensim(data, errors_dict, angles_dict=None):
         data['fs'], joint=joint
     )
     print(f"Joint axis: [{jhat[0]:.3f}, {jhat[1]:.3f}, {jhat[2]:.3f}]")
-    _eval_imu_method('kf_gframe_opensim', angle_deg, data, errors_dict, angles_dict)
+    _eval_method('kf_gframe_opensim', angle_deg, data['gt'], errors_dict, angles_dict)
 
 
 def process_opensense(data, errors_dict, angles_dict=None):
@@ -240,38 +215,14 @@ def process_opensense(data, errors_dict, angles_dict=None):
     results = load_opensense_results(
         data['subject_path'],
         data['joint_config']['gt_column'],
-        weighting='IKWithErrorsUniformWeights'
+        weighting='IKWithErrorsExtremeLowFeetWeights'
     )
     for algo, angle_deg in results.items():
-        _eval_precomputed(algo.upper(), angle_deg, gt, errors_dict, angles_dict)
-
-
-def process_vqf_opensim(data, errors_dict, angles_dict=None):
-    """Load VQF-OpenSim results and align to ground truth via cross-correlation."""
-    vqf_file = find_vqf_opensim_file(data['subject_id'])
-    if not vqf_file:
-        print("\n=== VQF-OpenSim: No file found ===")
-        return
-
-    print("\n=== VQF-OpenSim ===")
-    gt_col = data['joint_config']['gt_column']
-    vqf_angle = load_mot(vqf_file)[gt_col].values
-    gt = data['gt_original']
-
-    # VQF-OpenSim has different time boundaries than raw IMU, align via cross-correlation
-    offset, _ = find_best_shift(vqf_angle, gt)
-    est, gt_aligned = align_signals(vqf_angle, gt, offset)
-
-    error = np.abs(gt_aligned - est)
-    errors_dict['VQF-OpenSim'] = error
-    rmse = np.sqrt(np.mean(error**2))
-    print(f"VQF-OpenSim - RMSE: {rmse:.2f} deg (offset: {offset})")
-    if angles_dict is not None:
-        angles_dict['VQF-OpenSim'] = (est, gt_aligned)
+        _eval_method(algo.upper(), angle_deg, gt, errors_dict, angles_dict)
 
 
 def process_vqf_ik(data, errors_dict, angles_dict=None):
-    """Load VQF IK results (from generate_vqf_opensim.py) and align to ground truth."""
+    """Load VQF IK results using raw signal alignment (same as IMU methods)."""
     vqf_file = find_vqf_ik_file(data['subject_id'])
     if not vqf_file:
         print("\n=== VQF-IK: No file found ===")
@@ -280,16 +231,25 @@ def process_vqf_ik(data, errors_dict, angles_dict=None):
     print("\n=== VQF-IK ===")
     gt_col = data['joint_config']['gt_column']
     vqf_angle = load_mot(vqf_file)[gt_col].values
-    gt = data['gt_original']
 
-    # Align via cross-correlation (same as process_vqf_opensim)
-    offset, _ = find_best_shift(vqf_angle, gt)
-    est, gt_aligned = align_signals(vqf_angle, gt, offset)
+    gt = data['gt']
+
+    # Check if VQF-IK is pre-aligned (similar length to mocap) or needs offset trimming
+    # Pre-aligned VQF-IK has ~60k samples matching mocap, unaligned has ~144k
+    offset = data['alignment_offset']
+    vqf_is_prealigned = len(vqf_angle) < len(gt) * 1.5  # Within 50% of mocap length
+
+    if not vqf_is_prealigned and offset < 0:
+        # Old unaligned VQF-IK: apply offset trimming
+        vqf_angle = vqf_angle[-offset:]
+
+    n = min(len(vqf_angle), len(gt))
+    est, gt_aligned = vqf_angle[:n], gt[:n]
 
     error = np.abs(gt_aligned - est)
     errors_dict['VQF-IK'] = error
     rmse = np.sqrt(np.mean(error**2))
-    print(f"VQF-IK - RMSE: {rmse:.2f} deg (offset: {offset})")
+    print(f"VQF-IK - RMSE: {rmse:.2f} deg")
     if angles_dict is not None:
         angles_dict['VQF-IK'] = (est, gt_aligned)
 
@@ -326,9 +286,6 @@ def run_single_subject(joint, method, subject_id, no_plot=True, export=False):
 
     if method in ('opensense', 'all'):
         process_opensense(data, errors_dict, angles_dict)
-
-    if method in ('vqf_opensim', 'all'):
-        process_vqf_opensim(data, errors_dict, angles_dict)
 
     if method in ('vqf_ik', 'all'):
         process_vqf_ik(data, errors_dict, angles_dict)
@@ -429,7 +386,7 @@ def main():
     parser.add_argument('--method', type=str, default='all',
                         choices=['vqf_olsson', 'vqf_olsson_heading_correction',
                                  'opensense', 'kf_gframe_olsson', 'kf_gframe_optimized',
-                                 'kf_gframe_opensim', 'vqf_opensim', 'vqf_ik', 'all'],
+                                 'kf_gframe_opensim', 'vqf_ik', 'all'],
                         help='Estimation method (default: all)')
     parser.add_argument('--subject', type=str, default='Subject08',
                         help='Subject ID or "all" for all valid subjects (default: Subject08)')

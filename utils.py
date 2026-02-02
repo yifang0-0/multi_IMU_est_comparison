@@ -285,6 +285,65 @@ def compute_raw_signal_offset(subject_path, fs=FS, method='pelvis_gyr_z'):
 
 
 # =============================================================================
+# Alignment Utilities
+# =============================================================================
+
+def get_aligned_time_range(subject_path, fs=FS):
+    """Compute IMU sample indices that align with ground truth duration.
+
+    This function determines what portion of the IMU data corresponds to the
+    ground truth (mocap) recording period. Use this to truncate IMU data before
+    processing to avoid heading drift in pre-recording periods.
+
+    Args:
+        subject_path: Path to subject data directory (e.g., 'data/Subject08/walking')
+        fs: Sampling frequency (default: 100 Hz)
+
+    Returns:
+        dict with keys:
+            imu_start: First IMU sample index to use (0-indexed)
+            imu_end: Last IMU sample index to use (exclusive)
+            gt_samples: Number of ground truth samples
+            offset: Raw alignment offset (negative = IMU starts before mocap)
+    """
+    subject_path = Path(subject_path)
+    subject_id = subject_path.parent.name  # e.g., 'Subject08' from 'data/Subject08/walking'
+
+    # Load ground truth to get duration
+    mocap_path = subject_path / 'Mocap' / 'ikResults' / 'walking_IK.mot'
+    gt_df = load_mot(mocap_path)
+    gt_samples = len(gt_df)
+
+    # Get alignment offset (cached or computed)
+    offset = load_offset('raw_signal', subject_id, 'alignment')
+    if offset is None:
+        offset, corr, err = compute_raw_signal_offset(subject_path, fs)
+        if err:
+            print(f"Warning: Raw signal alignment failed ({err}), using zero offset")
+            offset = 0
+        else:
+            save_offset('raw_signal', subject_id, 'alignment', offset)
+
+    # Determine IMU range based on offset
+    # Negative offset means IMU starts before mocap (common case)
+    if offset < 0:
+        imu_start = -offset  # Trim early IMU samples
+        imu_end = imu_start + gt_samples
+    else:
+        # Mocap leads (rare): IMU starts at 0, but we'd trim GT instead
+        # For VQF generation, we still start at 0 but process only gt_samples
+        imu_start = 0
+        imu_end = gt_samples
+
+    return {
+        'imu_start': imu_start,
+        'imu_end': imu_end,
+        'gt_samples': gt_samples,
+        'offset': offset,
+    }
+
+
+# =============================================================================
 # Metrics
 # =============================================================================
 
@@ -297,25 +356,6 @@ def calculate_rmse(estimated, ground_truth):
 def gyro_magnitude(gyr):
     """Compute gyroscope magnitude, handling (3, N) or (N, 3) shapes."""
     return np.linalg.norm(gyr, axis=0) if gyr.shape[0] == 3 else np.linalg.norm(gyr, axis=1)
-
-
-# =============================================================================
-# VQF-OpenSim Results
-# =============================================================================
-
-def find_vqf_opensim_file(subject_id):
-    """Find VQF-OpenSim .mot file for subject. Returns Path or None."""
-    # Extract number from subject_id (e.g., 'Subject02' -> '2', 'Subject08' -> '8')
-    import re
-    match = re.search(r'(\d+)', subject_id)
-    if not match:
-        return None
-    num = str(int(match.group(1)))  # Remove leading zeros
-    pattern = f'subject{num}'
-    for f in Path('vqf_opensim_results').glob('*.mot'):
-        if f.stem.lower().startswith(pattern):
-            return f
-    return None
 
 
 def find_vqf_ik_file(subject_id, weighting='IKWithErrorsExtremeLowFeetWeights'):
