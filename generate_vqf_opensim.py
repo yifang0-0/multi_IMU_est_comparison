@@ -39,13 +39,15 @@ SENSOR_NAMES = ['pelvis_imu', 'femur_r_imu', 'femur_l_imu',
                 'tibia_r_imu', 'tibia_l_imu', 'calcn_r_imu']
 
 
-def generate_vqf_orientations(subject_id, align_to_mocap=True):
+def generate_vqf_orientations(subject_id, align_to_mocap=True,
+                              output_name='walking_orientations.sto'):
     """Generate VQF orientations for all sensors and write to .sto file.
 
     Args:
         subject_id: Subject identifier (e.g., 'Subject03')
         align_to_mocap: If True, trim IMU data to match ground truth duration.
             This prevents heading drift during pre-recording periods.
+        output_name: Output .sto filename for full or trimmed orientations.
     """
     subject_path = Path(f'data/{subject_id}/walking')
     mappings = get_sensor_mappings(subject_path / 'IMU' / 'myIMUMappings_walking.xml')
@@ -108,7 +110,7 @@ def generate_vqf_orientations(subject_id, align_to_mocap=True):
     quaternions = {name: q[:min_len] for name, q in quaternions.items()}
 
     # Write to .sto file
-    output_path = subject_path / 'IMU' / 'vqf' / 'walking_orientations.sto'
+    output_path = subject_path / 'IMU' / 'vqf' / output_name
     write_orientations_sto(output_path, time, quaternions, SENSOR_NAMES, int(fs))
     print(f"  Output: {output_path} ({min_len} samples)")
 
@@ -264,7 +266,7 @@ def validate_results(new_mot, existing_mot):
 
 def process_subject(args_tuple):
     """Process a single subject (worker function for multiprocessing)."""
-    subj, method, run_ik, _validate, low_feet_weights = args_tuple
+    subj, method, run_ik, low_feet_weights = args_tuple
     results = {'subject': subj, 'status': 'success', 'messages': []}
 
     try:
@@ -272,14 +274,25 @@ def process_subject(args_tuple):
 
         if method == 'vqf':
             # Step 1: Generate VQF orientations
-            sto_path = generate_vqf_orientations(subj)
-            results['messages'].append(f"Generated orientations: {sto_path}")
+            full_sto = generate_vqf_orientations(
+                subj,
+                align_to_mocap=False,
+                output_name='walking_orientations_full.sto'
+            )
+            results['messages'].append(f"Generated full orientations (calibration): {full_sto}")
+
+            sto_path = generate_vqf_orientations(
+                subj,
+                align_to_mocap=True,
+                output_name='walking_orientations.sto'
+            )
+            results['messages'].append(f"Generated trimmed orientations (IK): {sto_path}")
 
             # Step 2: Use existing posed model (from marker IK, same across methods)
             posed_model = subject_path / 'IMU' / 'madgwick' / 'model_Rajagopal2015_posed.osim'
 
             # Step 3: Run IMUPlacer calibration with VQF orientations
-            calibrated_model = run_imu_placer(subj, sto_path, posed_model)
+            calibrated_model = run_imu_placer(subj, full_sto, posed_model)
             results['messages'].append(f"Calibrated model: {calibrated_model}")
 
             # Step 4: Apply heading correction
@@ -359,7 +372,7 @@ def main():
     use_parallel = (len(subjects) > 1 or args.both_weights) and args.run_ik and not args.sequential
 
     if use_parallel:
-        work_items = [(subj, args.method, args.run_ik, args.validate, weights)
+        work_items = [(subj, args.method, args.run_ik, weights)
                       for subj in subjects for weights in weight_configs]
         n_workers = min(len(work_items), cpu_count())
         print(f"Running IK in parallel with {n_workers} workers ({len(work_items)} tasks)...\n")
@@ -391,13 +404,25 @@ def main():
 
                 if args.method == 'vqf':
                     # Step 1: Generate VQF orientations
-                    sto_path = generate_vqf_orientations(subj)
+                    full_sto = generate_vqf_orientations(
+                        subj,
+                        align_to_mocap=False,
+                        output_name='walking_orientations_full.sto'
+                    )
+                    print(f"  Full orientations (calibration): {full_sto}")
+
+                    sto_path = generate_vqf_orientations(
+                        subj,
+                        align_to_mocap=True,
+                        output_name='walking_orientations.sto'
+                    )
+                    print(f"  Trimmed orientations (IK): {sto_path}")
 
                     # Step 2: Use existing posed model (from marker IK, same across methods)
                     posed_model = subject_path / 'IMU' / 'madgwick' / 'model_Rajagopal2015_posed.osim'
 
                     # Step 3: Run IMUPlacer calibration with VQF orientations
-                    calibrated_model = run_imu_placer(subj, sto_path, posed_model)
+                    calibrated_model = run_imu_placer(subj, full_sto, posed_model)
 
                     # Step 4: Apply heading correction
                     corrected_sto = apply_heading_correction(subj, sto_path, posed_model)

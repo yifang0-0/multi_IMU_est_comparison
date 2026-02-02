@@ -1,9 +1,6 @@
-subject,Madgwick,Mahony,VQF-OpenSim,Xsens,kf_gframe,vqf+olsson,vqf+olsson+heading_correction
-Subject01,,,,,,,
-Subject02,12.36,12.70,3.53,15.49,6.56,66.19,8.70
-Subject03,11.52,12.87,,5.56,27.26,66.51,24.53
-Subject04,7.90,10.86,8.07,5.30,4.78,71.61,21.63
-Subject07,4.50,5.04,,16.92,2.98,101.33,11.34
-Subject08,5.35,6.74,,7.35,5.04,72.01,38.36
-Subject11,,,,,,,
-MEAN,8.33,9.64,5.80,10.12,9.33,75.53,20.91
+subject,MADGWICK,MAHONY,VQF-IK,XSENS,kf_gframe_olsson,kf_gframe_opensim,kf_gframe_optimized,vqf+olsson+heading_correction
+Subject02,11.83,12.70,4.43,15.25,25.43,6.97,6.58,78.46
+Subject03,11.07,12.87,16.56,5.73,20.81,8.41,27.31,34.31
+Subject04,7.64,10.86,7.22,5.76,46.83,7.80,4.78,51.90
+Subject08,5.29,6.74,3.15,7.91,15.30,4.97,5.04,41.74
+MEAN,8.95,10.79,7.84,8.66,27.09,7.04,10.93,51.60
