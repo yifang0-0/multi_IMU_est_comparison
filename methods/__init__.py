@@ -1,8 +1,8 @@
 """Estimation methods for joint angle calculation."""
 from .vqf_olsson import run_vqf_olsson, run_vqf_olsson_heading_corrected
-from .kf_gframe import run_kf_gframe, run_kf_gframe_olsson, run_kf_gframe_optimized
+from .kf_gframe import run_kf_gframe, run_kf_gframe_olsson, run_kf_gframe_optimized, run_kf_gframe_opensim
 
 __all__ = [
     'run_vqf_olsson', 'run_vqf_olsson_heading_corrected',
-    'run_kf_gframe', 'run_kf_gframe_olsson', 'run_kf_gframe_optimized'
+    'run_kf_gframe', 'run_kf_gframe_olsson', 'run_kf_gframe_optimized', 'run_kf_gframe_opensim'
 ]

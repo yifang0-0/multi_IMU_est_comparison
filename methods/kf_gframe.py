@@ -10,13 +10,20 @@ from calTools import (
 )
 from .shared import olsson_estimate_hinge_joint_axes, calculate_joint_angle
 
+OPENSIM_JOINT_AXES = {
+    # 'knee': np.array([-0.103, -0.156, 0.982]),
+    'knee': np.array([0,0, 1]),
+    # 'ankle': np.array([-0.585, -0.311, -0.749]),
+    'ankle': np.array([-0.6, -0.3, -0.75]),
+}
+
 
 
 
 def run_kf_gframe(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, r1=None, r2=None,
                   cov_w_scale=1e-2, cov_lnk_scale=0.35**2 * 10,
                   axis_mode='fixed', euler_axes='zyx',
-                  gt_angles=None, calib_samples=3000):
+                  gt_angles=None, calib_samples=3000, joint=None):
     """Estimate joint angle using Kalman filter with gravity frame constraints.
 
     Args:
@@ -28,10 +35,11 @@ def run_kf_gframe(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, r1=None, r2=None,
         r1, r2: Lever arms. If None, auto-estimated from data.
         cov_w_scale: Scale for process noise covariance (default: 1e-2).
         cov_lnk_scale: Scale for measurement noise covariance (default: 0.35**2 * 10).
-        axis_mode: Joint axis estimation mode: 'fixed', 'olsson', or 'optimize'.
+        axis_mode: Joint axis estimation mode: 'fixed', 'olsson', 'optimize', or 'opensim'.
         euler_axes: Euler angle extraction axes for 'fixed' mode (default: 'zyx').
         gt_angles: Ground truth angles for 'optimize' mode (degrees).
         calib_samples: Number of samples for axis optimization (default: 3000).
+        joint: Joint name ('knee' or 'ankle') - required for 'opensim' mode.
 
     Returns:
         (angle_deg, r1, r2, jhat, q_rel): Joint angle in degrees, lever arms, axis vector, and relative quaternion.
@@ -84,6 +92,14 @@ def run_kf_gframe(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, r1=None, r2=None,
         jhat = _optimize_joint_axis(q_rel, gt_angles, calib_samples)
         angle_deg = calculate_joint_angle(q_rel, jhat)
 
+    elif axis_mode == 'opensim':
+        if joint is None:
+            raise ValueError("axis_mode='opensim' requires joint parameter")
+        if joint not in OPENSIM_JOINT_AXES:
+            raise ValueError(f"Unknown joint: {joint}")
+        jhat = OPENSIM_JOINT_AXES[joint].copy()
+        angle_deg = calculate_joint_angle(q_rel, jhat)
+
     else:
         raise ValueError(f"Unknown axis_mode: {axis_mode}")
 
@@ -104,6 +120,12 @@ def run_kf_gframe_optimized(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, gt_angle
         calib_samples = len(gt_angles)  # Use full dataset by default
     return run_kf_gframe(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, r1=r1, r2=r2,
                          axis_mode='optimize', gt_angles=gt_angles, calib_samples=calib_samples)
+
+
+def run_kf_gframe_opensim(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, joint, r1=None, r2=None):
+    """KF with gravity frame using precomputed OpenSim joint axis."""
+    return run_kf_gframe(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, r1=r1, r2=r2,
+                         axis_mode='opensim', joint=joint)
 
 
 def _optimize_joint_axis(q_rel, gt_angles, calib_samples):

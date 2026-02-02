@@ -16,25 +16,23 @@ from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import pandas as pd
 
-# Valid subjects (others excluded due to data issues per CLAUDE.md)
-VALID_SUBJECTS = ['Subject02', 'Subject03', 'Subject04',
-                  'Subject07', 'Subject08']
+VALID_SUBJECTS = ['Subject02', 'Subject03', 'Subject04', 'Subject08']
 
 from utils import (
     load_imu_data, get_sensor_mappings,
     find_best_shift, align_signals,
-    load_opensense_results, find_vqf_opensim_file, load_offset, save_offset,
-    compute_raw_signal_offset, validate_offset
+    load_opensense_results, find_vqf_opensim_file, find_vqf_ik_file,
+    load_offset, save_offset, compute_raw_signal_offset, validate_offset
 )
 from methods.shared import load_mot, calculate_joint_angle
 from methods import (
     run_vqf_olsson, run_vqf_olsson_heading_corrected,
-    run_kf_gframe_olsson, run_kf_gframe_optimized
+    run_kf_gframe_olsson, run_kf_gframe_optimized, run_kf_gframe_opensim
 )
 from plotting import plot_time_series_error, plot_error_comparison
 
 
-def _eval_imu_method(name, angle_deg, data, errors_dict):
+def _eval_imu_method(name, angle_deg, data, errors_dict, angles_dict=None):
     """Evaluate IMU method against ground truth."""
     gt = data['gt']
     n = min(len(angle_deg), len(gt))
@@ -42,14 +40,36 @@ def _eval_imu_method(name, angle_deg, data, errors_dict):
     rmse = np.sqrt(np.mean((gt_a - est)**2))
     print(f"{name} - RMSE: {rmse:.2f} deg")
     errors_dict[name] = np.abs(gt_a - est)
+    if angles_dict is not None:
+        angles_dict[name] = (est, gt_a)
 
 
-def _eval_precomputed(name, angle_deg, gt, errors_dict):
+def _eval_precomputed(name, angle_deg, gt, errors_dict, angles_dict=None):
     """Evaluate precomputed method (already time-synced with mocap)."""
     n = min(len(angle_deg), len(gt))
     error = np.abs(gt[:n] - angle_deg[:n])
     errors_dict[name] = error
     print(f"{name} - RMSE: {np.sqrt(np.mean(error**2)):.2f} deg")
+    if angles_dict is not None:
+        angles_dict[name] = (angle_deg[:n], gt[:n])
+
+
+def export_time_series(subject_id, joint, angles_dict, fs, output_dir='results/time_series'):
+    """Export angle time series to CSV (one file per method)."""
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+    for method, (angle_deg, gt_method) in angles_dict.items():
+        n = min(len(angle_deg), len(gt_method))
+        df = pd.DataFrame({
+            'time': np.arange(n) / fs,
+            'sample': np.arange(n),
+            'estimated_deg': angle_deg[:n],
+            'gt_deg': gt_method[:n]
+        })
+        safe_method = method.replace('+', '_').replace('-', '_')
+        csv_path = Path(output_dir) / f'{subject_id}_{joint}_{safe_method}.csv'
+        df.to_csv(csv_path, index=False, float_format='%.4f')
+        print(f"Exported: {csv_path}")
 
 
 # Joint configuration
@@ -152,7 +172,7 @@ def prepare_data(joint_name, subject_id='Subject08'):
     }
 
 
-def process_vqf_olsson(data, errors_dict):
+def process_vqf_olsson(data, errors_dict, angles_dict=None):
     """Run VQF+Olsson and add errors to dict."""
     print("\n=== VQF+Olsson Joint Axis Estimation ===")
     angle_deg, jhat_prox, _, q_rel, _, _ = run_vqf_olsson(
@@ -166,51 +186,67 @@ def process_vqf_olsson(data, errors_dict):
     n = min(len(angle_deg), len(gt))
     if abs(np.corrcoef(angle_neg[:n], gt[:n])[0, 1]) > abs(np.corrcoef(angle_deg[:n], gt[:n])[0, 1]):
         angle_deg = angle_neg
-    _eval_imu_method('vqf+olsson', angle_deg, data, errors_dict)
+    _eval_imu_method('vqf+olsson', angle_deg, data, errors_dict, angles_dict)
 
 
-def process_vqf_olsson_heading_correction(data, errors_dict):
+def process_vqf_olsson_heading_correction(data, errors_dict, angles_dict=None):
     """Run VQF+Olsson+Heading Correction and add errors to dict."""
     print("\n=== VQF+Olsson+Heading Correction ===")
     angle_deg = run_vqf_olsson_heading_corrected(
         data['acc_prox'], data['gyr_prox'], data['acc_dist'], data['gyr_dist'], data['fs']
     )
-    _eval_imu_method('vqf+olsson+heading_correction', angle_deg, data, errors_dict)
+    _eval_imu_method('vqf+olsson+heading_correction', angle_deg, data, errors_dict, angles_dict)
 
 
-def process_kf_gframe_olsson(data, errors_dict):
+def process_kf_gframe_olsson(data, errors_dict, angles_dict=None):
     """Run KF_Gframe with Olsson joint axis estimation."""
     print("\n=== KF_Gframe + Olsson ===")
     angle_deg, r1_est, r2_est, _, _ = run_kf_gframe_olsson(
         data['acc_prox'], data['gyr_prox'], data['acc_dist'], data['gyr_dist'], data['fs']
     )
-    _eval_imu_method('kf_gframe_olsson', angle_deg, data, errors_dict)
+    _eval_imu_method('kf_gframe_olsson', angle_deg, data, errors_dict, angles_dict)
 
 
-def process_kf_gframe_optimized(data, errors_dict):
+def process_kf_gframe_optimized(data, errors_dict, angles_dict=None):
     """Run KF_Gframe with optimized joint axis (uses ground truth for calibration)."""
     print("\n=== KF_Gframe + Optimized Axis ===")
-    angle_deg, r1_est, r2_est, _, _ = run_kf_gframe_optimized(
+    angle_deg, _, _, _, _ = run_kf_gframe_optimized(
         data['acc_prox'], data['gyr_prox'], data['acc_dist'], data['gyr_dist'],
-        data['fs'], gt_angles=data['gt'], calib_samples= 3000
+        data['fs'], gt_angles=data['gt'],calib_samples=3000
     )
-    _eval_imu_method('kf_gframe_optimized', angle_deg, data, errors_dict)
+    _eval_imu_method('kf_gframe_optimized', angle_deg, data, errors_dict, angles_dict)
 
 
-def process_opensense(data, errors_dict):
-    """Load OpenSense results and add errors to dict.
+def process_kf_gframe_opensim(data, errors_dict, angles_dict=None):
+    """Run KF_Gframe with precomputed OpenSim joint axis."""
+    print("\n=== KF_Gframe + OpenSim Axis ===")
+    joint = 'knee' if 'knee' in data['joint_config']['gt_column'] else 'ankle'
+    angle_deg, _, _, jhat, _ = run_kf_gframe_opensim(
+        data['acc_prox'], data['gyr_prox'], data['acc_dist'], data['gyr_dist'],
+        data['fs'], joint=joint
+    )
+    print(f"Joint axis: [{jhat[0]:.3f}, {jhat[1]:.3f}, {jhat[2]:.3f}]")
+    _eval_imu_method('kf_gframe_opensim', angle_deg, data, errors_dict, angles_dict)
+
+
+def process_opensense(data, errors_dict, angles_dict=None):
+    """Load OpenSense IK results (VQF, Madgwick, Mahony, Xsens) and add errors to dict.
 
     Note: OpenSense results are already temporally aligned with mocap,
     so we use gt_original (no IMU-mocap offset applied).
     """
-    print("\n=== OpenSense Comparison ===")
+    print("\n=== OpenSense IK Comparison ===")
     gt = data['gt_original']
-    results = load_opensense_results(data['subject_path'], data['joint_config']['gt_column'])
+    results = load_opensense_results(
+        data['subject_path'],
+        data['joint_config']['gt_column'],
+        weighting='IKWithErrorsUniformWeights'
+    )
     for algo, angle_deg in results.items():
-        _eval_precomputed(algo.capitalize(), angle_deg, gt, errors_dict)
+        _eval_precomputed(algo.upper(), angle_deg, gt, errors_dict, angles_dict)
 
 
-def process_vqf_opensim(data, errors_dict):
+def process_vqf_opensim(data, errors_dict, angles_dict=None):
     """Load VQF-OpenSim results and align to ground truth via cross-correlation."""
     vqf_file = find_vqf_opensim_file(data['subject_id'])
     if not vqf_file:
@@ -230,9 +266,35 @@ def process_vqf_opensim(data, errors_dict):
     errors_dict['VQF-OpenSim'] = error
     rmse = np.sqrt(np.mean(error**2))
     print(f"VQF-OpenSim - RMSE: {rmse:.2f} deg (offset: {offset})")
+    if angles_dict is not None:
+        angles_dict['VQF-OpenSim'] = (est, gt_aligned)
 
 
-def run_single_subject(joint, method, subject_id, no_plot=True):
+def process_vqf_ik(data, errors_dict, angles_dict=None):
+    """Load VQF IK results (from generate_vqf_opensim.py) and align to ground truth."""
+    vqf_file = find_vqf_ik_file(data['subject_id'])
+    if not vqf_file:
+        print("\n=== VQF-IK: No file found ===")
+        return
+
+    print("\n=== VQF-IK ===")
+    gt_col = data['joint_config']['gt_column']
+    vqf_angle = load_mot(vqf_file)[gt_col].values
+    gt = data['gt_original']
+
+    # Align via cross-correlation (same as process_vqf_opensim)
+    offset, _ = find_best_shift(vqf_angle, gt)
+    est, gt_aligned = align_signals(vqf_angle, gt, offset)
+
+    error = np.abs(gt_aligned - est)
+    errors_dict['VQF-IK'] = error
+    rmse = np.sqrt(np.mean(error**2))
+    print(f"VQF-IK - RMSE: {rmse:.2f} deg (offset: {offset})")
+    if angles_dict is not None:
+        angles_dict['VQF-IK'] = (est, gt_aligned)
+
+
+def run_single_subject(joint, method, subject_id, no_plot=True, export=False):
     """Run estimation on a single subject and return errors dict."""
     print(f"\n{'='*60}")
     print(f"Processing {subject_id} - {joint} joint")
@@ -245,24 +307,35 @@ def run_single_subject(joint, method, subject_id, no_plot=True):
         return subject_id, {}
 
     errors_dict = {}
+    angles_dict = {} if export else None
 
     if method in ('kf_gframe_olsson', 'all'):
-        process_kf_gframe_olsson(data, errors_dict)
+        process_kf_gframe_olsson(data, errors_dict, angles_dict)
 
     if method in ('kf_gframe_optimized', 'all'):
-        process_kf_gframe_optimized(data, errors_dict)
+        process_kf_gframe_optimized(data, errors_dict, angles_dict)
+
+    if method in ('kf_gframe_opensim', 'all'):
+        process_kf_gframe_opensim(data, errors_dict, angles_dict)
 
     if method == 'vqf_olsson':  # Excluded from 'all' due to poor performance
-        process_vqf_olsson(data, errors_dict)
+        process_vqf_olsson(data, errors_dict, angles_dict)
 
     if method in ('vqf_olsson_heading_correction', 'all'):
-        process_vqf_olsson_heading_correction(data, errors_dict)
+        process_vqf_olsson_heading_correction(data, errors_dict, angles_dict)
 
     if method in ('opensense', 'all'):
-        process_opensense(data, errors_dict)
+        process_opensense(data, errors_dict, angles_dict)
 
     if method in ('vqf_opensim', 'all'):
-        process_vqf_opensim(data, errors_dict)
+        process_vqf_opensim(data, errors_dict, angles_dict)
+
+    if method in ('vqf_ik', 'all'):
+        process_vqf_ik(data, errors_dict, angles_dict)
+
+    # Export time series if requested
+    if export and angles_dict:
+        export_time_series(subject_id, joint, angles_dict, data['fs'])
 
     # Plot results for single subject (when not in parallel mode)
     if errors_dict:
@@ -273,7 +346,7 @@ def run_single_subject(joint, method, subject_id, no_plot=True):
     return subject_id, errors_dict
 
 
-def run_all_subjects(joint, method, workers=None):
+def run_all_subjects(joint, method, workers=None, export=False):
     """Run estimation on all valid subjects in parallel."""
     print(f"\nRunning {method} on all subjects for {joint} joint...")
     print(f"Valid subjects: {', '.join(VALID_SUBJECTS)}")
@@ -282,7 +355,7 @@ def run_all_subjects(joint, method, workers=None):
     results = {}
     with ProcessPoolExecutor(max_workers=workers) as executor:
         futures = {
-            executor.submit(run_single_subject, joint, method, subj, True): subj
+            executor.submit(run_single_subject, joint, method, subj, True, export): subj
             for subj in VALID_SUBJECTS
         }
         for future in as_completed(futures):
@@ -356,7 +429,7 @@ def main():
     parser.add_argument('--method', type=str, default='all',
                         choices=['vqf_olsson', 'vqf_olsson_heading_correction',
                                  'opensense', 'kf_gframe_olsson', 'kf_gframe_optimized',
-                                 'vqf_opensim', 'all'],
+                                 'kf_gframe_opensim', 'vqf_opensim', 'vqf_ik', 'all'],
                         help='Estimation method (default: all)')
     parser.add_argument('--subject', type=str, default='Subject08',
                         help='Subject ID or "all" for all valid subjects (default: Subject08)')
@@ -364,15 +437,17 @@ def main():
                         help='Number of parallel workers (default: CPU count)')
     parser.add_argument('--no-plot', action='store_true',
                         help='Disable interactive plotting (plots still saved)')
+    parser.add_argument('--export', action='store_true',
+                        help='Export angle time series to results/time_series/')
     args = parser.parse_args()
 
     Path('plots').mkdir(exist_ok=True)
 
     if args.subject == 'all':
-        results = run_all_subjects(args.joint, args.method, args.workers)
+        results = run_all_subjects(args.joint, args.method, args.workers, args.export)
         print_summary_table(results, args.joint)
     else:
-        _ = run_single_subject(args.joint, args.method, args.subject, args.no_plot)
+        _ = run_single_subject(args.joint, args.method, args.subject, args.no_plot, args.export)
 
 
 if __name__ == "__main__":
