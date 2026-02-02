@@ -11,7 +11,7 @@ A benchmarking framework for comparing IMU-based joint angle estimation methods 
 | `kf_gframe_olsson` | Extended Kalman Filter with gravity frame constraints + Olsson joint axis |
 | `kf_gframe_optimized` | KF with gravity frame + optimized joint axis (uses ground truth for calibration) |
 | `opensense` | OpenSense IK results (Xsens, Madgwick, Mahony algorithms) |
-| `vqf_opensim` | Precomputed VQF-OpenSim results |
+| `vqf_ik` | VQF orientations processed through OpenSim IK |
 
 ## Results Summary
 
@@ -25,7 +25,6 @@ A benchmarking framework for comparing IMU-based joint angle estimation methods 
 | kf_gframe_olsson | 5.01 |
 | Mahony | 5.57 |
 | Xsens | 5.99 |
-| VQF-OpenSim | 13.06 |
 
 The heading-corrected VQF+Olsson method achieves excellent performance after proper quaternion handling.
 
@@ -71,7 +70,7 @@ python run_estimation.py --joint knee --no-plot
 
 **Arguments:**
 - `--joint`: `knee` or `ankle`
-- `--method`: `vqf_olsson`, `vqf_olsson_heading_correction`, `kf_gframe_olsson`, `kf_gframe_optimized`, `opensense`, `vqf_opensim`, or `all`
+- `--method`: `vqf_olsson`, `vqf_olsson_heading_correction`, `kf_gframe_olsson`, `kf_gframe_optimized`, `kf_gframe_opensim`, `opensense`, `vqf_ik`, or `all`
 - `--subject`: `Subject01`-`Subject11` or `all`
 - `--workers`: Number of parallel workers (default: CPU count)
 - `--no-plot`: Save plots without displaying

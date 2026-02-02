@@ -1,5 +1,7 @@
 Subject08/ 
 data/
+plots/
+results/time_series
 .venv/
 __pycache__
 .DS_Store
