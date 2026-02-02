@@ -27,7 +27,7 @@ from utils import (
 from methods.shared import load_mot, calculate_joint_angle
 from methods import (
     run_vqf_olsson, run_vqf_olsson_heading_corrected,
-    run_kf_gframe_olsson, run_kf_gframe_optimized
+    run_kf_gframe_olsson, run_kf_gframe_optimized, run_kf_gframe_opensim
 )
 from plotting import plot_time_series_error, plot_error_comparison
 
@@ -210,11 +210,23 @@ def process_kf_gframe_olsson(data, errors_dict, angles_dict=None):
 def process_kf_gframe_optimized(data, errors_dict, angles_dict=None):
     """Run KF_Gframe with optimized joint axis (uses ground truth for calibration)."""
     print("\n=== KF_Gframe + Optimized Axis ===")
-    angle_deg, r1_est, r2_est, _, _ = run_kf_gframe_optimized(
+    angle_deg, _, _, _, _ = run_kf_gframe_optimized(
         data['acc_prox'], data['gyr_prox'], data['acc_dist'], data['gyr_dist'],
-        data['fs'], gt_angles=data['gt'], calib_samples= 3000
+        data['fs'], gt_angles=data['gt'],calib_samples=3000
     )
     _eval_imu_method('kf_gframe_optimized', angle_deg, data, errors_dict, angles_dict)
+
+
+def process_kf_gframe_opensim(data, errors_dict, angles_dict=None):
+    """Run KF_Gframe with precomputed OpenSim joint axis."""
+    print("\n=== KF_Gframe + OpenSim Axis ===")
+    joint = 'knee' if 'knee' in data['joint_config']['gt_column'] else 'ankle'
+    angle_deg, _, _, jhat, _ = run_kf_gframe_opensim(
+        data['acc_prox'], data['gyr_prox'], data['acc_dist'], data['gyr_dist'],
+        data['fs'], joint=joint
+    )
+    print(f"Joint axis: [{jhat[0]:.3f}, {jhat[1]:.3f}, {jhat[2]:.3f}]")
+    _eval_imu_method('kf_gframe_opensim', angle_deg, data, errors_dict, angles_dict)
 
 
 def process_opensense(data, errors_dict, angles_dict=None):
@@ -302,6 +314,9 @@ def run_single_subject(joint, method, subject_id, no_plot=True, export=False):
 
     if method in ('kf_gframe_optimized', 'all'):
         process_kf_gframe_optimized(data, errors_dict, angles_dict)
+
+    if method in ('kf_gframe_opensim', 'all'):
+        process_kf_gframe_opensim(data, errors_dict, angles_dict)
 
     if method == 'vqf_olsson':  # Excluded from 'all' due to poor performance
         process_vqf_olsson(data, errors_dict, angles_dict)
@@ -414,7 +429,7 @@ def main():
     parser.add_argument('--method', type=str, default='all',
                         choices=['vqf_olsson', 'vqf_olsson_heading_correction',
                                  'opensense', 'kf_gframe_olsson', 'kf_gframe_optimized',
-                                 'vqf_opensim', 'vqf_ik', 'all'],
+                                 'kf_gframe_opensim', 'vqf_opensim', 'vqf_ik', 'all'],
                         help='Estimation method (default: all)')
     parser.add_argument('--subject', type=str, default='Subject08',
                         help='Subject ID or "all" for all valid subjects (default: Subject08)')

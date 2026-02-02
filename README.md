@@ -41,6 +41,18 @@ uv pip install -r requirements.txt
 python download_simtk_dataset.py
 ```
 
+### OpenSim (optional)
+
+The `generate_vqf_opensim.py` script requires OpenSim, which cannot be installed via pip. Use pixi or conda:
+
+```bash
+# Using pixi
+pixi add opensim-org::opensim
+
+# Using conda
+conda install -c opensim-org opensim
+```
+
 ## Usage
 
 ```bash

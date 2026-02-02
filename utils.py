@@ -83,11 +83,11 @@ def load_opensense_results(subject_path, gt_column='knee_angle_r', algorithm=Non
     """
     from pathlib import Path
     subject_path = Path(subject_path)
-    algos = [algorithm] if algorithm else ['vqf', 'xsens', 'madgwick', 'mahony']
+    algos = [algorithm] if algorithm else ['xsens', 'madgwick', 'mahony']
     results = {}
 
     for algo in algos:
-        if algo not in ('xsens', 'madgwick', 'mahony', 'vqf'):
+        if algo not in ('xsens', 'madgwick', 'mahony'):
             print(f"Unknown algorithm: {algo}")
             continue
 
@@ -318,7 +318,7 @@ def find_vqf_opensim_file(subject_id):
     return None
 
 
-def find_vqf_ik_file(subject_id, weighting='IKWithErrorsUniformWeights'):
+def find_vqf_ik_file(subject_id, weighting='IKWithErrorsExtremeLowFeetWeights'):
     """Find generated VQF IK .mot file for subject. Returns Path or None."""
     base_path = Path(f'data/{subject_id}/walking/IMU/vqf/IKResults')
     # Check new structure first (with weighting subdirectory)
