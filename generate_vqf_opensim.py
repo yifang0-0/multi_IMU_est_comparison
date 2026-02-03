@@ -28,15 +28,23 @@ import argparse
 import os
 from pathlib import Path
 from multiprocessing import Pool, cpu_count
-import qmt
+from qmt import oriEstOfflineVQF
 
 from utils import load_imu_data, get_sensor_mappings, write_orientations_sto, read_orientations_sto, get_aligned_time_range
 from methods.shared import load_mot
 from constants import VALID_SUBJECTS
 
-# Standard sensor names in OpenSim order
+# Constants
 SENSOR_NAMES = ['pelvis_imu', 'femur_r_imu', 'femur_l_imu',
                 'tibia_r_imu', 'tibia_l_imu', 'calcn_r_imu']
+SAMPLE_RATE = 100.0
+SENSOR_TO_OPENSIM_ROTATION = -np.pi / 2  # -90° around X axis
+IK_ACCURACY = 1e-6
+
+
+def get_subject_path(subject_id):
+    """Return the walking data path for a subject."""
+    return Path(f'data/{subject_id}/walking')
 
 
 def generate_vqf_orientations(subject_id, align_to_mocap=True,
@@ -49,20 +57,19 @@ def generate_vqf_orientations(subject_id, align_to_mocap=True,
             This prevents heading drift during pre-recording periods.
         output_name: Output .sto filename for full or trimmed orientations.
     """
-    subject_path = Path(f'data/{subject_id}/walking')
+    subject_path = get_subject_path(subject_id)
     mappings = get_sensor_mappings(subject_path / 'IMU' / 'myIMUMappings_walking.xml')
     imu_dir = subject_path / 'IMU' / 'xsens' / 'LowerExtremity'
-    fs = 100.0
 
     # Get aligned time range (start and end truncation to match GT duration)
     trim_start = 0
     trim_end = None  # None means no end truncation
     if align_to_mocap:
-        time_range = get_aligned_time_range(subject_path, fs)
+        time_range = get_aligned_time_range(subject_path, SAMPLE_RATE)
         trim_start = time_range['imu_start']
         trim_end = time_range['imu_end']
         if trim_start > 0 or trim_end is not None:
-            duration = (trim_end - trim_start) / fs if trim_end else 'unknown'
+            duration = (trim_end - trim_start) / SAMPLE_RATE if trim_end else 'unknown'
             print(f"  Aligning to GT: samples [{trim_start}:{trim_end}] ({duration:.1f}s)")
 
     quaternions = {}
@@ -87,19 +94,18 @@ def generate_vqf_orientations(subject_id, align_to_mocap=True,
         gyr = imu_df[['Gyr_X', 'Gyr_Y', 'Gyr_Z']].values
         mag = imu_df[['Mag_X', 'Mag_Y', 'Mag_Z']].values
 
-        # Trim to aligned time range (both start and end)
-        if trim_start > 0 or trim_end is not None:
-            acc = acc[trim_start:trim_end]
-            gyr = gyr[trim_start:trim_end]
-            mag = mag[trim_start:trim_end]
+        # Trim to aligned time range (slicing with [0:None] is a no-op)
+        acc = acc[trim_start:trim_end]
+        gyr = gyr[trim_start:trim_end]
+        mag = mag[trim_start:trim_end]
 
         # Run VQF orientation estimation with magnetometer for Earth-fixed heading
-        q = qmt.oriEstOfflineVQF(gyr, acc, mag=mag, params={'Ts': 1.0/fs})
+        q = oriEstOfflineVQF(gyr, acc, mag=mag, params={'Ts': 1.0/SAMPLE_RATE})
         quaternions[sensor_name] = q
         print(f"  {sensor_name}: {len(q)} samples")
 
         if time is None:
-            time = np.arange(len(q)) / fs
+            time = np.arange(len(q)) / SAMPLE_RATE
 
     if not quaternions:
         raise ValueError(f"No valid sensors found for {subject_id}")
@@ -111,7 +117,7 @@ def generate_vqf_orientations(subject_id, align_to_mocap=True,
 
     # Write to .sto file
     output_path = subject_path / 'IMU' / 'vqf' / output_name
-    write_orientations_sto(output_path, time, quaternions, SENSOR_NAMES, int(fs))
+    write_orientations_sto(output_path, time, quaternions, SENSOR_NAMES, int(SAMPLE_RATE))
     print(f"  Output: {output_path} ({min_len} samples)")
 
     return output_path
@@ -121,7 +127,7 @@ def run_imu_placer(subject_id, orientations_sto, posed_model_path):
     """Run IMUPlacer to create calibrated model with VQF orientations."""
     import opensim as osim
 
-    subject_path = Path(f'data/{subject_id}/walking')
+    subject_path = get_subject_path(subject_id)
     output_dir = subject_path / 'IMU' / 'vqf'
     output_dir.mkdir(parents=True, exist_ok=True)
     calibrated_model_path = output_dir / 'model_Rajagopal2015_calibrated.osim'
@@ -131,7 +137,7 @@ def run_imu_placer(subject_id, orientations_sto, posed_model_path):
     imu_placer.set_orientation_file_for_calibration(str(orientations_sto))
     imu_placer.set_base_imu_label('pelvis_imu')
     imu_placer.set_base_heading_axis('z')
-    imu_placer.set_sensor_to_opensim_rotations(osim.Vec3(-np.pi/2, 0, 0))
+    imu_placer.set_sensor_to_opensim_rotations(osim.Vec3(SENSOR_TO_OPENSIM_ROTATION, 0, 0))
 
     imu_placer.run(False)  # visualize=False
 
@@ -146,7 +152,7 @@ def apply_heading_correction(subject_id, orientations_sto, posed_model_path):
     """Apply heading correction to orientation data."""
     import opensim as osim
 
-    subject_path = Path(f'data/{subject_id}/walking')
+    subject_path = get_subject_path(subject_id)
     marker_ik_path = subject_path / 'Mocap' / 'ikResults' / 'walking_IK.mot'
     output_sto = subject_path / 'IMU' / 'vqf' / 'walking_orientations_hc.sto'
 
@@ -164,7 +170,7 @@ def apply_heading_correction(subject_id, orientations_sto, posed_model_path):
     oTable = osim.TimeSeriesTableQuaternion(str(orientations_sto))
 
     R_sensor = osim.Rotation()
-    R_sensor.setRotationFromAngleAboutX(-np.pi/2)
+    R_sensor.setRotationFromAngleAboutX(SENSOR_TO_OPENSIM_ROTATION)
     osense.rotateOrientationTable(oTable, R_sensor)
 
     # Compute heading correction
@@ -194,7 +200,7 @@ def run_opensim_ik(subject_id, orientations_sto, method='vqf', low_feet_weights=
     """Run OpenSim IMU Inverse Kinematics on orientation data."""
     import opensim as osim
 
-    subject_path = Path(f'data/{subject_id}/walking')
+    subject_path = get_subject_path(subject_id)
     if model_path is None:
         model_path = subject_path / 'IMU' / 'madgwick' / 'model_Rajagopal2015_calibrated.osim'
 
@@ -212,11 +218,8 @@ def run_opensim_ik(subject_id, orientations_sto, method='vqf', low_feet_weights=
     ik_tool.set_orientations_file(str(orientations_sto))
     ik_tool.set_results_directory(str(output_dir))
 
-    # Sensor-to-OpenSim rotation: -90° around X axis (from existing setup XML)
-    ik_tool.set_sensor_to_opensim_rotations(osim.Vec3(-1.5707963, 0, 0))
-
-    # Set accuracy (matches existing setup XML)
-    ik_tool.set_accuracy(1e-6)
+    ik_tool.set_sensor_to_opensim_rotations(osim.Vec3(SENSOR_TO_OPENSIM_ROTATION, 0, 0))
+    ik_tool.set_accuracy(IK_ACCURACY)
 
     # Set orientation weights (low feet weights improves ankle angle estimation)
     if low_feet_weights:
@@ -270,7 +273,7 @@ def process_subject(args_tuple):
     results = {'subject': subj, 'status': 'success', 'messages': []}
 
     try:
-        subject_path = Path(f'data/{subj}/walking')
+        subject_path = get_subject_path(subj)
 
         if method == 'vqf':
             # Step 1: Generate VQF orientations
@@ -334,6 +337,31 @@ def process_subject(args_tuple):
     return results
 
 
+def run_parallel(subjects, args, weight_configs):
+    """Process subjects using multiprocessing."""
+    work_items = [(subj, args.method, args.run_ik, weights)
+                  for subj in subjects for weights in weight_configs]
+    n_workers = min(len(work_items), cpu_count())
+    print(f"Processing {len(work_items)} task(s) with {n_workers} worker(s)...\n")
+
+    with Pool(n_workers) as pool:
+        results = pool.map(process_subject, work_items)
+
+    # Print results and run validation
+    for result in results:
+        print(f"\n{result['subject']}:")
+        for msg in result['messages']:
+            print(f"  {msg}")
+
+        if args.validate and args.method == 'madgwick' and result['status'] == 'success':
+            subject_path = get_subject_path(result['subject'])
+            new_mot = subject_path / 'IMU' / 'madgwick_reproduced' / 'IKResults' / 'walking_IK.mot'
+            existing_mot = subject_path / 'IMU' / 'madgwick' / 'IKResults' / 'IKWithErrorsUniformWeights' / 'walking_IK.mot'
+            if new_mot.exists() and existing_mot.exists():
+                print(f"  Validating against: {existing_mot}")
+                validate_results(new_mot, existing_mot)
+
+
 def main():
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
@@ -350,8 +378,6 @@ def main():
                         help='Run OpenSim IMU IK after generating orientations')
     parser.add_argument('--validate', action='store_true',
                         help='Compare IK results against existing (madgwick only)')
-    parser.add_argument('--sequential', action='store_true',
-                        help='Run sequentially instead of parallel (for debugging)')
     parser.add_argument('--low-feet-weights', action='store_true',
                         help='Use low orientation weights for foot sensors (0.01)')
     parser.add_argument('--both-weights', action='store_true',
@@ -365,114 +391,8 @@ def main():
     else:
         print(f"Using existing Madgwick orientations for: {', '.join(subjects)}")
 
-    # Determine weight configurations to run
     weight_configs = [False, True] if args.both_weights else [args.low_feet_weights]
-
-    # Use parallel processing for multiple subjects with IK or both weight configs
-    use_parallel = (len(subjects) > 1 or args.both_weights) and args.run_ik and not args.sequential
-
-    if use_parallel:
-        work_items = [(subj, args.method, args.run_ik, weights)
-                      for subj in subjects for weights in weight_configs]
-        n_workers = min(len(work_items), cpu_count())
-        print(f"Running IK in parallel with {n_workers} workers ({len(work_items)} tasks)...\n")
-
-        with Pool(n_workers) as pool:
-            results = pool.map(process_subject, work_items)
-
-        # Print results
-        for result in results:
-            print(f"\n{result['subject']}:")
-            for msg in result['messages']:
-                print(f"  {msg}")
-
-            # Run validation after parallel IK (validation is fast, do sequentially)
-            if args.validate and args.method == 'madgwick' and result['status'] == 'success':
-                subject_path = Path(f"data/{result['subject']}/walking")
-                new_mot = subject_path / 'IMU' / 'madgwick_reproduced' / 'IKResults' / 'walking_IK.mot'
-                existing_mot = subject_path / 'IMU' / 'madgwick' / 'IKResults' / 'IKWithErrorsUniformWeights' / 'walking_IK.mot'
-                if new_mot.exists() and existing_mot.exists():
-                    print(f"  Validating against: {existing_mot}")
-                    validate_results(new_mot, existing_mot)
-
-    else:
-        # Sequential processing
-        for subj in subjects:
-            print(f"\n{subj}:")
-            try:
-                subject_path = Path(f'data/{subj}/walking')
-
-                if args.method == 'vqf':
-                    # Step 1: Generate VQF orientations
-                    full_sto = generate_vqf_orientations(
-                        subj,
-                        align_to_mocap=False,
-                        output_name='walking_orientations_full.sto'
-                    )
-                    print(f"  Full orientations (calibration): {full_sto}")
-
-                    sto_path = generate_vqf_orientations(
-                        subj,
-                        align_to_mocap=True,
-                        output_name='walking_orientations.sto'
-                    )
-                    print(f"  Trimmed orientations (IK): {sto_path}")
-
-                    # Step 2: Use existing posed model (from marker IK, same across methods)
-                    posed_model = subject_path / 'IMU' / 'madgwick' / 'model_Rajagopal2015_posed.osim'
-
-                    # Step 3: Run IMUPlacer calibration with VQF orientations
-                    calibrated_model = run_imu_placer(subj, full_sto, posed_model)
-
-                    # Step 4: Apply heading correction
-                    corrected_sto = apply_heading_correction(subj, sto_path, posed_model)
-
-                    # Use corrected orientations and calibrated model for IK
-                    ik_orientations = corrected_sto
-                    ik_model = calibrated_model
-                else:
-                    # Use existing Madgwick orientations - convert to compatible format
-                    madgwick_sto = subject_path / 'IMU' / 'madgwick' / 'walking_orientations.sto'
-                    if not madgwick_sto.exists():
-                        print(f"  Error: {madgwick_sto} not found")
-                        continue
-                    print(f"  Reading: {madgwick_sto}")
-
-                    # Convert to compatible format
-                    time, quaternions, data_rate = read_orientations_sto(madgwick_sto)
-                    sto_path = subject_path / 'IMU' / 'madgwick_reproduced' / 'walking_orientations.sto'
-                    write_orientations_sto(sto_path, time, quaternions, list(quaternions.keys()), data_rate)
-                    print(f"  Converted to: {sto_path}")
-                    ik_orientations = sto_path
-                    ik_model = None  # Use default
-
-                if args.run_ik:
-                    for low_feet_weights in weight_configs:
-                        weight_label = "low feet weights" if low_feet_weights else "uniform weights"
-                        print(f"  Running OpenSim IMU IK ({weight_label})...")
-                        mot_path = run_opensim_ik(subj, ik_orientations, method=args.method,
-                                                   low_feet_weights=low_feet_weights,
-                                                   model_path=ik_model)
-                        print(f"  IK output: {mot_path}")
-
-                    # Auto-validate for madgwick
-                    if args.method == 'madgwick':
-                        existing_mot = subject_path / 'IMU' / 'madgwick' / 'IKResults' / 'IKWithErrorsUniformWeights' / 'walking_IK.mot'
-                        if existing_mot.exists():
-                            print(f"  Validating against: {existing_mot}")
-                            validate_results(mot_path, existing_mot)
-
-                if args.validate and args.method == 'madgwick':
-                    new_mot = subject_path / 'IMU' / 'madgwick_reproduced' / 'IKResults' / 'walking_IK.mot'
-                    existing_mot = subject_path / 'IMU' / 'madgwick' / 'IKResults' / 'IKWithErrorsUniformWeights' / 'walking_IK.mot'
-                    if new_mot.exists() and existing_mot.exists():
-                        print(f"  Validating against: {existing_mot}")
-                        validate_results(new_mot, existing_mot)
-                    else:
-                        print("  Cannot validate: run with --run-ik first")
-
-            except Exception as e:
-                print(f"  Error: {e}")
+    run_parallel(subjects, args, weight_configs)
 
     if not args.run_ik and args.method == 'vqf':
         print("\nNext steps:")
