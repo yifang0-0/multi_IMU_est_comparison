@@ -141,8 +141,10 @@ def _optimize_joint_axis(q_rel, gt_angles, calib_samples):
         angle_est = calculate_joint_angle(q_calib, jhat)
         return np.sqrt(np.mean((gt_calib - angle_est)**2))
 
-    # Multi-start optimization from X, Y, Z axis initializations
-    init_points = [(0.01, 0), (np.pi/2, 0), (np.pi/2, np.pi/2)]
+    # 4x8 grid over spherical coordinates for better coverage
+    init_points = [(theta, phi)
+                   for theta in np.linspace(0.01, np.pi - 0.01, 4)
+                   for phi in np.linspace(-np.pi, np.pi, 8, endpoint=False)]
     best = min(
         (minimize(objective, init, method='L-BFGS-B',
                   bounds=[(0, np.pi), (-np.pi, np.pi)])

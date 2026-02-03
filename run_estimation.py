@@ -25,7 +25,8 @@ from constants import VALID_SUBJECTS
 from methods.shared import load_mot, calculate_joint_angle
 from methods import (
     run_vqf_olsson, run_vqf_olsson_heading_corrected,
-    run_kf_gframe_olsson, run_kf_gframe_optimized, run_kf_gframe_opensim
+    run_kf_gframe_olsson, run_kf_gframe_optimized, run_kf_gframe_opensim,
+    run_rnno_olsson, run_rnno_optimized, run_rnno_opensim, run_rnno_all_variants
 )
 from plotting import plot_time_series_error, plot_error_comparison
 
@@ -187,7 +188,7 @@ def process_kf_gframe_optimized(data, errors_dict, angles_dict=None):
     print("\n=== KF_Gframe + Optimized Axis ===")
     angle_deg, _, _, _, _ = run_kf_gframe_optimized(
         data['acc_prox'], data['gyr_prox'], data['acc_dist'], data['gyr_dist'],
-        data['fs'], gt_angles=data['gt'],calib_samples=3000
+        data['fs'], gt_angles=data['gt'],calib_samples=None
     )
     _eval_method('kf_gframe_optimized', angle_deg, data['gt'], errors_dict, angles_dict)
 
@@ -202,6 +203,74 @@ def process_kf_gframe_opensim(data, errors_dict, angles_dict=None):
     )
     print(f"Joint axis: [{jhat[0]:.3f}, {jhat[1]:.3f}, {jhat[2]:.3f}]")
     _eval_method('kf_gframe_opensim', angle_deg, data['gt'], errors_dict, angles_dict)
+
+
+def process_rnno_olsson(data, errors_dict, angles_dict=None):
+    """Run RNNO with Olsson joint axis estimation."""
+    print("\n=== RNNO + Olsson ===")
+    angle_deg, _, _, jhat, q_rel = run_rnno_olsson(
+        data['acc_prox'], data['gyr_prox'],
+        data['acc_dist'], data['gyr_dist'],
+        data['fs']
+    )
+    # Pick axis sign with better correlation
+    angle_neg = calculate_joint_angle(q_rel, -jhat)
+    gt = data['gt']
+    n = min(len(angle_deg), len(gt))
+    if abs(np.corrcoef(angle_neg[:n], gt[:n])[0, 1]) > abs(np.corrcoef(angle_deg[:n], gt[:n])[0, 1]):
+        angle_deg = angle_neg
+    _eval_method('rnno+olsson', angle_deg, data['gt'], errors_dict, angles_dict)
+
+
+def process_rnno_optimized(data, errors_dict, angles_dict=None):
+    """Run RNNO with optimized joint axis (uses ground truth for calibration)."""
+    print("\n=== RNNO + Optimized Axis ===")
+    angle_deg, _, _, _, _ = run_rnno_optimized(
+        data['acc_prox'], data['gyr_prox'], data['acc_dist'], data['gyr_dist'],
+        data['fs'], gt_angles=data['gt'], calib_samples=None
+    )
+    _eval_method('rnno_optimized', angle_deg, data['gt'], errors_dict, angles_dict)
+
+
+def process_rnno_opensim(data, errors_dict, angles_dict=None):
+    """Run RNNO with precomputed OpenSim joint axis."""
+    print("\n=== RNNO + OpenSim Axis ===")
+    joint = 'knee' if 'knee' in data['joint_config']['gt_column'] else 'ankle'
+    angle_deg, _, _, jhat, _ = run_rnno_opensim(
+        data['acc_prox'], data['gyr_prox'], data['acc_dist'], data['gyr_dist'],
+        data['fs'], joint=joint
+    )
+    print(f"Joint axis: [{jhat[0]:.3f}, {jhat[1]:.3f}, {jhat[2]:.3f}]")
+    _eval_method('rnno_opensim', angle_deg, data['gt'], errors_dict, angles_dict)
+
+
+def process_rnno_all(data, errors_dict, angles_dict=None):
+    """Run all RNNO variants with shared orientation computation."""
+    print("\n=== RNNO (all variants, shared orientation) ===")
+    joint = 'knee' if 'knee' in data['joint_config']['gt_column'] else 'ankle'
+
+    results = run_rnno_all_variants(
+        data['acc_prox'], data['gyr_prox'], data['acc_dist'], data['gyr_dist'],
+        data['fs'], gt_angles=data['gt'], calib_samples=None, joint=joint
+    )
+
+    # Process olsson variant (with axis sign correction)
+    angle_deg, jhat, q_rel = results['olsson']
+    angle_neg = calculate_joint_angle(q_rel, -jhat)
+    gt = data['gt']
+    n = min(len(angle_deg), len(gt))
+    if abs(np.corrcoef(angle_neg[:n], gt[:n])[0, 1]) > abs(np.corrcoef(angle_deg[:n], gt[:n])[0, 1]):
+        angle_deg = angle_neg
+    _eval_method('rnno+olsson', angle_deg, gt, errors_dict, angles_dict)
+
+    # Process optimized variant
+    angle_deg, jhat, _ = results['optimized']
+    _eval_method('rnno_optimized', angle_deg, gt, errors_dict, angles_dict)
+
+    # Process opensim variant
+    angle_deg, jhat, _ = results['opensim']
+    print(f"OpenSim joint axis: [{jhat[0]:.3f}, {jhat[1]:.3f}, {jhat[2]:.3f}]")
+    _eval_method('rnno_opensim', angle_deg, gt, errors_dict, angles_dict)
 
 
 def process_opensense(data, errors_dict, angles_dict=None):
@@ -289,6 +358,15 @@ def run_single_subject(joint, method, subject_id, no_plot=True, export=False):
 
     if method in ('vqf_ik', 'all'):
         process_vqf_ik(data, errors_dict, angles_dict)
+
+    if method == 'all':
+        process_rnno_all(data, errors_dict, angles_dict)
+    elif method in ('rnno', 'rnno_olsson'):
+        process_rnno_olsson(data, errors_dict, angles_dict)
+    elif method == 'rnno_optimized':
+        process_rnno_optimized(data, errors_dict, angles_dict)
+    elif method == 'rnno_opensim':
+        process_rnno_opensim(data, errors_dict, angles_dict)
 
     # Export time series if requested
     if export and angles_dict:
@@ -386,7 +464,8 @@ def main():
     parser.add_argument('--method', type=str, default='all',
                         choices=['vqf_olsson', 'vqf_olsson_heading_correction',
                                  'opensense', 'kf_gframe_olsson', 'kf_gframe_optimized',
-                                 'kf_gframe_opensim', 'vqf_ik', 'all'],
+                                 'kf_gframe_opensim', 'vqf_ik',
+                                 'rnno', 'rnno_olsson', 'rnno_optimized', 'rnno_opensim', 'all'],
                         help='Estimation method (default: all)')
     parser.add_argument('--subject', type=str, default='Subject08',
                         help='Subject ID or "all" for all valid subjects (default: Subject08)')

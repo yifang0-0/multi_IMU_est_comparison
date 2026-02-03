@@ -6,3 +6,4 @@ requests
 tqdm
 seaborn
 scipy
+git+https://github.com/simon-bachhuber/imt.git

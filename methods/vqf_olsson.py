@@ -60,6 +60,7 @@ def run_vqf_olsson_heading_corrected(acc_prox, gyr_prox, acc_dist, gyr_dist, fs)
     t = qmt.timeVec(N=q_prox.shape[0], Ts=Ts)
     q_dist_corr, *_ = qmt.headingCorrection(
         gyr1=gyr_prox, gyr2=gyr_dist,
+        acc1=acc_prox, acc2=acc_dist,
         quat1=q_prox, quat2=q_dist,
         t=t,
         joint=jhat_prox,  # Use estimated joint axis (shape (3,) for 1D joint)
