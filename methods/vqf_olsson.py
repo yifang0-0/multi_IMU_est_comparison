@@ -19,8 +19,8 @@ def run_vqf_olsson(acc_prox, gyr_prox, acc_dist, gyr_dist, fs):
         estimated joint axes, relative quaternion, and segment orientations
     """
     # Estimate orientations using VQF
-    q_prox = qmt.oriEstVQF(gyr_prox, acc_prox, params={'Ts': 1.0/fs})
-    q_dist = qmt.oriEstVQF(gyr_dist, acc_dist, params={'Ts': 1.0/fs})
+    q_prox = qmt.oriEstOfflineVQF(gyr_prox, acc_prox, params={'Ts': 1.0/fs})
+    q_dist = qmt.oriEstOfflineVQF(gyr_dist, acc_dist, params={'Ts': 1.0/fs})
 
     # Estimate joint axes using Olsson method
     jhat_prox, jhat_dist = olsson_estimate_hinge_joint_axes(acc_prox, acc_dist, gyr_prox, gyr_dist)

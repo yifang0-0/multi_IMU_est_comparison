@@ -112,7 +112,7 @@ def load_opensense_results(subject_path, gt_column='knee_angle_r', algorithm=Non
 
 def estimate_orientations(acc, gyr, fs):
     """Estimate orientation using VQF without magnetometer."""
-    q = qmt.oriEstVQF(gyr, acc, mag=None, params={'Ts': 1.0/fs})
+    q = qmt.oriEstOfflineVQF(gyr, acc, mag=None, params={'Ts': 1.0/fs})
     return q[0] if isinstance(q, tuple) else q
 
 

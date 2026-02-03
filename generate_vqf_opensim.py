@@ -94,7 +94,7 @@ def generate_vqf_orientations(subject_id, align_to_mocap=True,
             mag = mag[trim_start:trim_end]
 
         # Run VQF orientation estimation with magnetometer for Earth-fixed heading
-        q = qmt.oriEstVQF(gyr, acc, mag=mag, params={'Ts': 1.0/fs})
+        q = qmt.oriEstOfflineVQF(gyr, acc, mag=mag, params={'Ts': 1.0/fs})
         quaternions[sensor_name] = q
         print(f"  {sensor_name}: {len(q)} samples")
 
