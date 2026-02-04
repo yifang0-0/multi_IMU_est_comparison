@@ -25,9 +25,9 @@ from constants import VALID_SUBJECTS
 from methods.shared import load_mot, calculate_joint_angle
 from methods import (
     run_vqf_olsson, run_vqf_olsson_heading_corrected,
-    run_kf_gframe_olsson, run_kf_gframe_optimized, run_kf_gframe_opensim,
-    run_rnno_olsson, run_rnno_optimized, run_rnno_opensim, run_rnno_all_variants, run_kf_gframe_pca
+    run_kf_gframe, run_rnno, run_rnno_all_variants
 )
+from methods.shared import calculate_joint_angle
 from plotting import plot_time_series_error, plot_error_comparison
 
 
@@ -168,82 +168,60 @@ def process_vqf_olsson_heading_correction(data, errors_dict, angles_dict=None):
     _eval_method('vqf+olsson+heading_correction', angle_deg, data['gt'], errors_dict, angles_dict)
 
 
-def process_kf_gframe_olsson(data, errors_dict, angles_dict=None):
-    """Run KF_Gframe with Olsson joint axis estimation."""
-    print("\n=== KF_Gframe + Olsson ===")
-    angle_deg, r1_est, r2_est, _, _ = run_kf_gframe_olsson(
-        data['acc_prox'], data['gyr_prox'], data['acc_dist'], data['gyr_dist'], data['fs']
-    )
-    _eval_method('kf_gframe_olsson', angle_deg, data['gt'], errors_dict, angles_dict)
-
-def process_kf_gframe_pca(data, errors_dict, angles_dict=None):
-    """Run KF_Gframe with Olsson joint axis estimation."""
-    print("\n=== KF_Gframe + Olsson ===")
-    angle_deg, r1_est, r2_est, _, _ = run_kf_gframe_pca(
-        data['acc_prox'], data['gyr_prox'], data['acc_dist'], data['gyr_dist'], data['fs']
-    )
-    _eval_method('kf_gframe_pca', angle_deg, data['gt'], errors_dict, angles_dict)
-
-
-def process_kf_gframe_optimized(data, errors_dict, angles_dict=None):
-    """Run KF_Gframe with optimized joint axis (uses ground truth for calibration)."""
-    print("\n=== KF_Gframe + Optimized Axis ===")
-    angle_deg, _, _, _, _ = run_kf_gframe_optimized(
-        data['acc_prox'], data['gyr_prox'], data['acc_dist'], data['gyr_dist'],
-        data['fs'], gt_angles=data['gt'],calib_samples=None
-    )
-    _eval_method('kf_gframe_optimized', angle_deg, data['gt'], errors_dict, angles_dict)
-
-
-def process_kf_gframe_opensim(data, errors_dict, angles_dict=None):
-    """Run KF_Gframe with precomputed OpenSim joint axis."""
-    print("\n=== KF_Gframe + OpenSim Axis ===")
+def process_kf_gframe(data, axis_mode, errors_dict, angles_dict=None):
+    """Run KF_Gframe with specified axis mode."""
+    print(f"\n=== KF_Gframe + {axis_mode} ===")
     joint = 'knee' if 'knee' in data['joint_config']['gt_column'] else 'ankle'
-    angle_deg, _, _, jhat, _ = run_kf_gframe_opensim(
-        data['acc_prox'], data['gyr_prox'], data['acc_dist'], data['gyr_dist'],
-        data['fs'], joint=joint
-    )
-    print(f"Joint axis: [{jhat[0]:.3f}, {jhat[1]:.3f}, {jhat[2]:.3f}]")
-    _eval_method('kf_gframe_opensim', angle_deg, data['gt'], errors_dict, angles_dict)
 
+    kwargs = {'axis_mode': axis_mode}
+    if axis_mode == 'optimize':
+        kwargs['gt_angles'] = data['gt']
+    elif axis_mode == 'opensim':
+        kwargs['joint'] = joint
 
-def process_rnno_olsson(data, errors_dict, angles_dict=None):
-    """Run RNNO with Olsson joint axis estimation."""
-    print("\n=== RNNO + Olsson ===")
-    angle_deg, _, _, jhat, q_rel = run_rnno_olsson(
+    angle_deg, _, _, jhat, _ = run_kf_gframe(
         data['acc_prox'], data['gyr_prox'],
         data['acc_dist'], data['gyr_dist'],
-        data['fs']
+        data['fs'], **kwargs
     )
-    # Pick axis sign with better correlation
-    angle_neg = calculate_joint_angle(q_rel, -jhat)
-    gt = data['gt']
-    n = min(len(angle_deg), len(gt))
-    if abs(np.corrcoef(angle_neg[:n], gt[:n])[0, 1]) > abs(np.corrcoef(angle_deg[:n], gt[:n])[0, 1]):
-        angle_deg = angle_neg
-    _eval_method('rnno+olsson', angle_deg, data['gt'], errors_dict, angles_dict)
+
+    if axis_mode == 'opensim':
+        print(f"Joint axis: [{jhat[0]:.3f}, {jhat[1]:.3f}, {jhat[2]:.3f}]")
+
+    _eval_method(f'kf_gframe_{axis_mode}', angle_deg, data['gt'], errors_dict, angles_dict)
 
 
-def process_rnno_optimized(data, errors_dict, angles_dict=None):
-    """Run RNNO with optimized joint axis (uses ground truth for calibration)."""
-    print("\n=== RNNO + Optimized Axis ===")
-    angle_deg, _, _, _, _ = run_rnno_optimized(
-        data['acc_prox'], data['gyr_prox'], data['acc_dist'], data['gyr_dist'],
-        data['fs'], gt_angles=data['gt'], calib_samples=None
-    )
-    _eval_method('rnno_optimized', angle_deg, data['gt'], errors_dict, angles_dict)
-
-
-def process_rnno_opensim(data, errors_dict, angles_dict=None):
-    """Run RNNO with precomputed OpenSim joint axis."""
-    print("\n=== RNNO + OpenSim Axis ===")
+def process_rnno(data, axis_mode, errors_dict, angles_dict=None):
+    """Run RNNO with specified axis mode."""
+    print(f"\n=== RNNO + {axis_mode} ===")
     joint = 'knee' if 'knee' in data['joint_config']['gt_column'] else 'ankle'
-    angle_deg, _, _, jhat, _ = run_rnno_opensim(
-        data['acc_prox'], data['gyr_prox'], data['acc_dist'], data['gyr_dist'],
-        data['fs'], joint=joint
+
+    kwargs = {'axis_mode': axis_mode}
+    if axis_mode == 'optimize':
+        kwargs['gt_angles'] = data['gt']
+    elif axis_mode == 'opensim':
+        kwargs['joint'] = joint
+
+    angle_deg, _, _, jhat, q_rel = run_rnno(
+        data['acc_prox'], data['gyr_prox'],
+        data['acc_dist'], data['gyr_dist'],
+        data['fs'], **kwargs
     )
-    print(f"Joint axis: [{jhat[0]:.3f}, {jhat[1]:.3f}, {jhat[2]:.3f}]")
-    _eval_method('rnno_opensim', angle_deg, data['gt'], errors_dict, angles_dict)
+
+    # For olsson, pick axis sign with better correlation
+    if axis_mode == 'olsson':
+        angle_neg = calculate_joint_angle(q_rel, -jhat)
+        gt = data['gt']
+        n = min(len(angle_deg), len(gt))
+        if abs(np.corrcoef(angle_neg[:n], gt[:n])[0, 1]) > abs(np.corrcoef(angle_deg[:n], gt[:n])[0, 1]):
+            angle_deg = angle_neg
+        method_name = 'rnno+olsson'
+    else:
+        if axis_mode == 'opensim':
+            print(f"Joint axis: [{jhat[0]:.3f}, {jhat[1]:.3f}, {jhat[2]:.3f}]")
+        method_name = f'rnno_{axis_mode}'
+
+    _eval_method(method_name, angle_deg, data['gt'], errors_dict, angles_dict)
 
 
 def process_rnno_all(data, errors_dict, angles_dict=None):
@@ -340,38 +318,34 @@ def run_single_subject(joint, method, subject_id, no_plot=True, export=False):
     errors_dict = {}
     angles_dict = {} if export else None
 
-    if method in ('kf_gframe_olsson', 'all'):
-        process_kf_gframe_olsson(data, errors_dict, angles_dict)
+    # KF_Gframe variants
+    kf_modes = [('kf_gframe_olsson', 'olsson'), ('kf_gframe_optimized', 'optimize'),
+                ('kf_gframe_pca', 'pca_omega'), ('kf_gframe_opensim', 'opensim')]
+    for method_name, axis_mode in kf_modes:
+        if method in (method_name, 'all'):
+            process_kf_gframe(data, axis_mode, errors_dict, angles_dict)
 
-    if method in ('kf_gframe_optimized', 'all'):
-        process_kf_gframe_optimized(data, errors_dict, angles_dict)
-
-    if method in ('kf_gframe_pca', 'all'):
-        process_kf_gframe_pca(data, errors_dict, angles_dict)
-
-    if method in ('kf_gframe_opensim', 'all'):
-        process_kf_gframe_opensim(data, errors_dict, angles_dict)
-
+    # VQF variants
     if method == 'vqf_olsson':  # Excluded from 'all' due to poor performance
         process_vqf_olsson(data, errors_dict, angles_dict)
-
     if method in ('vqf_olsson_heading_correction', 'all'):
         process_vqf_olsson_heading_correction(data, errors_dict, angles_dict)
 
+    # OpenSense and VQF-IK
     if method in ('opensense', 'all'):
         process_opensense(data, errors_dict, angles_dict)
-
     if method in ('vqf_ik', 'all'):
         process_vqf_ik(data, errors_dict, angles_dict)
 
+    # RNNO variants
     if method == 'all':
         process_rnno_all(data, errors_dict, angles_dict)
     elif method in ('rnno', 'rnno_olsson'):
-        process_rnno_olsson(data, errors_dict, angles_dict)
+        process_rnno(data, 'olsson', errors_dict, angles_dict)
     elif method == 'rnno_optimized':
-        process_rnno_optimized(data, errors_dict, angles_dict)
+        process_rnno(data, 'optimize', errors_dict, angles_dict)
     elif method == 'rnno_opensim':
-        process_rnno_opensim(data, errors_dict, angles_dict)
+        process_rnno(data, 'opensim', errors_dict, angles_dict)
 
     # Export time series if requested
     if export and angles_dict:

@@ -77,33 +77,6 @@ def run_rnno(
     return angle_deg, None, None, jhat, q_rel
 
 
-def run_rnno_olsson(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, q_rel=None):
-    """RNNO with Olsson joint axis estimation."""
-    return run_rnno(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, axis_mode='olsson', q_rel=q_rel)
-
-
-def run_rnno_optimized(
-    acc_prox,             # proximal accelerometer (N, 3) or (3, N)
-    gyr_prox,             # proximal gyroscope (N, 3) or (3, N)
-    acc_dist,             # distal accelerometer (N, 3) or (3, N)
-    gyr_dist,             # distal gyroscope (N, 3) or (3, N)
-    fs,                   # sampling frequency in Hz
-    gt_angles,            # ground truth angles (degrees)
-    calib_samples=None,   # samples for optimization (default: full dataset)
-    q_rel=None,           # pre-computed relative quaternion
-):
-    """RNNO with optimized joint axis (requires ground truth)."""
-    if calib_samples is None:
-        calib_samples = len(gt_angles)
-    return run_rnno(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, axis_mode='optimize',
-                    gt_angles=gt_angles, calib_samples=calib_samples, q_rel=q_rel)
-
-
-def run_rnno_opensim(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, joint, q_rel=None):
-    """RNNO with precomputed OpenSim joint axis."""
-    return run_rnno(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, axis_mode='opensim', joint=joint, q_rel=q_rel)
-
-
 def run_rnno_all_variants(
     acc_prox,             # proximal accelerometer (N, 3) or (3, N)
     gyr_prox,             # proximal gyroscope (N, 3) or (3, N)

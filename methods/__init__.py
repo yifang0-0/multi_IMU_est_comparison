@@ -1,14 +1,20 @@
 """Estimation methods for joint angle calculation."""
 from .vqf_olsson import run_vqf_olsson, run_vqf_olsson_heading_corrected
-from .kf_gframe import run_kf_gframe, run_kf_gframe_olsson, run_kf_gframe_optimized, run_kf_gframe_opensim
-from .rnno import (
-    run_rnno, run_rnno_olsson, run_rnno_optimized, run_rnno_opensim,
-    compute_rnno_orientation, run_rnno_all_variants
+from .kf_gframe import run_kf_gframe
+from .rnno import run_rnno, compute_rnno_orientation, run_rnno_all_variants
+from .axis import (
+    estimate_joint_axis, register_axis_method, get_axis_method, list_axis_methods,
+    AXIS_METHODS, OPENSIM_JOINT_AXES
 )
 
 __all__ = [
+    # VQF methods
     'run_vqf_olsson', 'run_vqf_olsson_heading_corrected',
-    'run_kf_gframe', 'run_kf_gframe_olsson', 'run_kf_gframe_optimized', 'run_kf_gframe_opensim',
-    'run_rnno', 'run_rnno_olsson', 'run_rnno_optimized', 'run_rnno_opensim',
-    'compute_rnno_orientation', 'run_rnno_all_variants',
+    # KF methods
+    'run_kf_gframe',
+    # RNNO methods
+    'run_rnno', 'compute_rnno_orientation', 'run_rnno_all_variants',
+    # Axis estimation API
+    'estimate_joint_axis', 'register_axis_method', 'get_axis_method', 'list_axis_methods',
+    'AXIS_METHODS', 'OPENSIM_JOINT_AXES',
 ]

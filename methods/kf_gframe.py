@@ -81,34 +81,6 @@ def run_kf_gframe(
     return angle_deg, r1, r2, jhat, q_rel
 
 
-def run_kf_gframe_olsson(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, r1=None, r2=None):
-    """KF with gravity frame using Olsson joint axis estimation."""
-    return run_kf_gframe(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, r1=r1, r2=r2, axis_mode='olsson')
-
-def run_kf_gframe_pca(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, r1=None, r2=None):
-    """KF with gravity frame using PCA-based joint axis estimation."""
-    return run_kf_gframe(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, r1=r1, r2=r2, axis_mode='pca_omega')
-
-
-def run_kf_gframe_optimized(
-    acc_prox, gyr_prox, acc_dist, gyr_dist, fs,
-    gt_angles,             # ground truth angles (degrees), required
-    r1=None, r2=None,
-    calib_samples=None,    # defaults to len(gt_angles) for full dataset
-):
-    """KF with gravity frame using optimized joint axis (requires ground truth)."""
-    if calib_samples is None:
-        calib_samples = len(gt_angles)  # Use full dataset by default
-    return run_kf_gframe(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, r1=r1, r2=r2,
-                         axis_mode='optimize', gt_angles=gt_angles, calib_samples=calib_samples)
-
-
-def run_kf_gframe_opensim(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, joint, r1=None, r2=None):
-    """KF with gravity frame using precomputed OpenSim joint axis."""
-    return run_kf_gframe(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, r1=r1, r2=r2,
-                         axis_mode='opensim', joint=joint)
-
-
 def estimate_lever_arms(
     acc1, gyr1,        # proximal IMU data (3, N) or (N, 3)
     acc2, gyr2,        # distal IMU data (3, N) or (N, 3)
