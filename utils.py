@@ -68,19 +68,13 @@ def get_sensor_mappings(xml_path):
     return mappings
 
 
-def load_opensense_results(subject_path, gt_column='knee_angle_r', algorithm=None,
-                           weighting='IKWithErrorsUniformWeights'):
-    """Load pre-calculated results from OpenSense algorithms.
-
-    Args:
-        subject_path: Path to subject data directory
-        gt_column: Column name to extract (default: 'knee_angle_r')
-        algorithm: Single algorithm ('xsens', 'madgwick', 'mahony', 'vqf') or None for all
-        weighting: IK weighting scheme ('IKWithErrorsUniformWeights' or 'IKWithErrorsExtremeLowFeetWeights')
-
-    Returns:
-        dict mapping algorithm name to angle values (np.ndarray)
-    """
+def load_opensense_results(
+    subject_path,  # path to subject data directory
+    gt_column='knee_angle_r',  # column name to extract
+    algorithm=None,  # 'xsens', 'madgwick', 'mahony' or None for all
+    weighting='IKWithErrorsUniformWeights',  # IK weighting scheme
+):
+    """Load OpenSense IK results, returns dict mapping algorithm name to angles."""
     from pathlib import Path
     subject_path = Path(subject_path)
     algos = [algorithm] if algorithm else ['xsens', 'madgwick', 'mahony']
@@ -120,12 +114,11 @@ def estimate_orientations(acc, gyr, fs):
 # Signal Alignment
 # =============================================================================
 
-def find_best_shift(est_signal, gt_signal):
-    """Find best alignment offset between two signals using cross-correlation.
-
-    Returns (offset, correlation) where offset is for use with align_signals
-    (positive = trim gt, negative = trim est).
-    """
+def find_best_shift(
+    est_signal,  # estimated signal array
+    gt_signal,   # ground truth signal array
+):
+    """Find best alignment via cross-correlation, returns (offset, correlation)."""
     if np.std(est_signal) == 0 or np.std(gt_signal) == 0:
         return 0, 0.0
     if np.isnan(est_signal).any() or np.isnan(gt_signal).any():
@@ -142,11 +135,12 @@ def find_best_shift(est_signal, gt_signal):
     return -int(lags[best_idx]), float(peak_corr)
 
 
-def align_signals(est_signal, gt_signal, shift):
-    """Align signals based on calculated shift.
-
-    Note: Uses legacy sign convention where negative shift means est starts before gt.
-    """
+def align_signals(
+    est_signal,  # estimated signal array
+    gt_signal,   # ground truth signal array
+    shift,       # offset from find_best_shift (negative = est starts before gt)
+):
+    """Align two signals based on calculated shift, returns (aligned_est, aligned_gt)."""
     if shift > 0:
         common_len = min(len(est_signal), len(gt_signal) - shift)
         return est_signal[:common_len], gt_signal[shift:shift+common_len]
@@ -173,18 +167,13 @@ def _approx_derivative(y, fs=FS):
     return dy
 
 
-def validate_offset(offset, imu_len, mocap_len, min_overlap_fraction=0.5):
-    """Check if offset produces physically plausible overlap.
-
-    Args:
-        offset: Computed alignment offset (positive = IMU starts before mocap)
-        imu_len: Length of IMU signal in samples
-        mocap_len: Length of mocap signal in samples
-        min_overlap_fraction: Minimum required overlap as fraction of shorter signal
-
-    Returns:
-        tuple: (is_valid, overlap_samples, message)
-    """
+def validate_offset(
+    offset,      # alignment offset (positive = IMU starts before mocap)
+    imu_len,     # length of IMU signal in samples
+    mocap_len,   # length of mocap signal in samples
+    min_overlap_fraction=0.5,  # minimum overlap as fraction of shorter signal
+):
+    """Check if offset produces valid overlap, returns (is_valid, overlap_samples, message)."""
     if offset > 0:  # IMU starts before mocap
         overlap = min(imu_len - offset, mocap_len)
     else:  # Mocap starts before IMU
@@ -200,25 +189,12 @@ def validate_offset(offset, imu_len, mocap_len, min_overlap_fraction=0.5):
     return True, overlap, f"Valid overlap: {overlap} samples ({overlap/FS:.1f} sec)"
 
 
-def compute_raw_signal_offset(subject_path, fs=FS, method='pelvis_gyr_z'):
-    """Compute alignment offset using pelvis gyroscope (joint-independent).
-
-    This method correlates IMU pelvis gyroscope with mocap pelvis angular velocity.
-    Uses full cross-correlation to search all possible lags.
-
-    Args:
-        subject_path: Path to subject data directory (e.g., 'data/Subject08/walking')
-        fs: Sampling frequency
-        method: Signal pair to use:
-            - 'pelvis_gyr_z': pelvis_Gyr_Z vs d/dt[pelvis_rotation] (best correlation ~0.87)
-            - 'pelvis_gyr_mag': ||pelvis_gyr|| vs ||d/dt[pelvis_euler]|| (original)
-
-    Returns:
-        tuple: (offset, correlation, error_message)
-            offset: Alignment offset (negative = IMU starts before mocap in legacy convention)
-            correlation: Peak normalized correlation value
-            error_message: None if successful, error string otherwise
-    """
+def compute_raw_signal_offset(
+    subject_path,  # path to subject data directory (e.g., 'data/Subject08/walking')
+    fs=FS,         # sampling frequency
+    method='pelvis_gyr_z',  # 'pelvis_gyr_z' or 'pelvis_gyr_mag'
+):
+    """Compute IMU-mocap alignment offset via pelvis gyro correlation, returns (offset, correlation, error)."""
     subject_path = Path(subject_path)
     imu_dir = subject_path / 'IMU' / 'xsens' / 'LowerExtremity'
     mocap_path = subject_path / 'Mocap' / 'ikResults' / 'walking_IK.mot'
@@ -288,24 +264,11 @@ def compute_raw_signal_offset(subject_path, fs=FS, method='pelvis_gyr_z'):
 # Alignment Utilities
 # =============================================================================
 
-def get_aligned_time_range(subject_path, fs=FS):
-    """Compute IMU sample indices that align with ground truth duration.
-
-    This function determines what portion of the IMU data corresponds to the
-    ground truth (mocap) recording period. Use this to truncate IMU data before
-    processing to avoid heading drift in pre-recording periods.
-
-    Args:
-        subject_path: Path to subject data directory (e.g., 'data/Subject08/walking')
-        fs: Sampling frequency (default: 100 Hz)
-
-    Returns:
-        dict with keys:
-            imu_start: First IMU sample index to use (0-indexed)
-            imu_end: Last IMU sample index to use (exclusive)
-            gt_samples: Number of ground truth samples
-            offset: Raw alignment offset (negative = IMU starts before mocap)
-    """
+def get_aligned_time_range(
+    subject_path,  # path to subject data directory (e.g., 'data/Subject08/walking')
+    fs=FS,         # sampling frequency
+):
+    """Get IMU indices aligned with mocap, returns dict with imu_start, imu_end, gt_samples, offset."""
     subject_path = Path(subject_path)
     subject_id = subject_path.parent.name  # e.g., 'Subject08' from 'data/Subject08/walking'
 
@@ -394,16 +357,14 @@ def save_offset(method, subject_id, gt_column, offset):
 # OpenSim File Writing
 # =============================================================================
 
-def write_orientations_sto(output_path, time, quaternions, sensor_names, data_rate=100):
-    """Write quaternion orientations to OpenSim .sto format.
-
-    Args:
-        output_path: Path for output .sto file
-        time: Time array (N,)
-        quaternions: Dict mapping sensor_name -> quaternions (N, 4) in w,x,y,z format
-        sensor_names: List of sensor names in desired column order
-        data_rate: Sampling rate in Hz
-    """
+def write_orientations_sto(
+    output_path,   # path for output .sto file
+    time,          # time array (N,)
+    quaternions,   # dict mapping sensor_name -> quaternions (N, 4) in w,x,y,z
+    sensor_names,  # list of sensor names in desired column order
+    data_rate=100,  # sampling rate in Hz
+):
+    """Write quaternion orientations to OpenSim .sto format."""
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -427,14 +388,10 @@ def write_orientations_sto(output_path, time, quaternions, sensor_names, data_ra
             f.write('\t'.join(row) + '\n')
 
 
-def read_orientations_sto(file_path):
-    """Read quaternion orientations from OpenSim .sto format.
-
-    Returns:
-        time: Time array (N,)
-        quaternions: Dict mapping sensor_name -> quaternions (N, 4) in w,x,y,z format
-        data_rate: Sampling rate in Hz
-    """
+def read_orientations_sto(
+    file_path,  # path to .sto file
+):
+    """Read quaternion orientations from OpenSim .sto, returns (time, quaternions_dict, data_rate)."""
     with open(file_path, 'r') as f:
         lines = f.readlines()
 

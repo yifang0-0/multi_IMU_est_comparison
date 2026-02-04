@@ -26,7 +26,7 @@ from methods.shared import load_mot, calculate_joint_angle
 from methods import (
     run_vqf_olsson, run_vqf_olsson_heading_corrected,
     run_kf_gframe_olsson, run_kf_gframe_optimized, run_kf_gframe_opensim,
-    run_rnno_olsson, run_rnno_optimized, run_rnno_opensim, run_rnno_all_variants
+    run_rnno_olsson, run_rnno_optimized, run_rnno_opensim, run_rnno_all_variants, run_kf_gframe_pca
 )
 from plotting import plot_time_series_error, plot_error_comparison
 
@@ -75,17 +75,11 @@ JOINTS = {
 }
 
 
-def prepare_data(joint_name, subject_id='Subject08'):
-    """Load and prepare IMU data for a given joint and subject.
-
-    Args:
-        joint_name: 'knee' or 'ankle'
-        subject_id: Subject identifier (e.g., 'Subject08')
-
-    Returns:
-        dict with keys: acc_prox, gyr_prox, acc_dist, gyr_dist,
-                        fs, gt, subject_path, joint_config, alignment_offset
-    """
+def prepare_data(
+    joint_name,              # 'knee' or 'ankle'
+    subject_id='Subject08',  # subject identifier (e.g., 'Subject08')
+):
+    """Load and prepare IMU data, returns dict with acc/gyr arrays, fs, gt, paths, and alignment info."""
     joint_config = JOINTS[joint_name]
     subject_path = Path(f'data/{subject_id}/walking')
     imu_path = subject_path / 'IMU' / 'xsens' / 'LowerExtremity'
@@ -115,7 +109,7 @@ def prepare_data(joint_name, subject_id='Subject08'):
     gt_original = gt
 
     # Get aligned time range using centralized utility
-    time_range = get_aligned_time_range(subject_path, fs)
+    time_range = get_aligned_time_range(subject_path, int(fs))
     offset = time_range['offset']
     imu_start = time_range['imu_start']
     imu_end = time_range['imu_end']
@@ -181,6 +175,14 @@ def process_kf_gframe_olsson(data, errors_dict, angles_dict=None):
         data['acc_prox'], data['gyr_prox'], data['acc_dist'], data['gyr_dist'], data['fs']
     )
     _eval_method('kf_gframe_olsson', angle_deg, data['gt'], errors_dict, angles_dict)
+
+def process_kf_gframe_pca(data, errors_dict, angles_dict=None):
+    """Run KF_Gframe with Olsson joint axis estimation."""
+    print("\n=== KF_Gframe + Olsson ===")
+    angle_deg, r1_est, r2_est, _, _ = run_kf_gframe_pca(
+        data['acc_prox'], data['gyr_prox'], data['acc_dist'], data['gyr_dist'], data['fs']
+    )
+    _eval_method('kf_gframe_pca', angle_deg, data['gt'], errors_dict, angles_dict)
 
 
 def process_kf_gframe_optimized(data, errors_dict, angles_dict=None):
@@ -273,12 +275,12 @@ def process_rnno_all(data, errors_dict, angles_dict=None):
     _eval_method('rnno_opensim', angle_deg, gt, errors_dict, angles_dict)
 
 
-def process_opensense(data, errors_dict, angles_dict=None):
-    """Load OpenSense IK results (VQF, Madgwick, Mahony, Xsens) and add errors to dict.
-
-    Note: OpenSense results are already temporally aligned with mocap,
-    so we use gt_original (no IMU-mocap offset applied).
-    """
+def process_opensense(
+    data,              # prepared data dict from prepare_data()
+    errors_dict,       # dict to store error arrays (modified in place)
+    angles_dict=None,  # optional dict to store (est, gt) tuples
+):
+    """Load OpenSense IK results (VQF, Madgwick, Mahony, Xsens) and add errors to dict."""
     print("\n=== OpenSense IK Comparison ===")
     gt = data['gt_original']
     results = load_opensense_results(
@@ -343,6 +345,9 @@ def run_single_subject(joint, method, subject_id, no_plot=True, export=False):
 
     if method in ('kf_gframe_optimized', 'all'):
         process_kf_gframe_optimized(data, errors_dict, angles_dict)
+
+    if method in ('kf_gframe_pca', 'all'):
+        process_kf_gframe_pca(data, errors_dict, angles_dict)
 
     if method in ('kf_gframe_opensim', 'all'):
         process_kf_gframe_opensim(data, errors_dict, angles_dict)
@@ -431,7 +436,7 @@ def print_summary_table(results, joint):
     mean_row = {'subject': 'MEAN'}
     for m in methods:
         vals = [r[m] for r in rows if not np.isnan(r.get(m, np.nan))]
-        mean_row[m] = np.mean(vals) if vals else np.nan
+        mean_row[m] = np.mean(vals) if vals else np.nan  # type: ignore[assignment]
     rows.append(mean_row)
 
     df = pd.DataFrame(rows)
@@ -464,7 +469,7 @@ def main():
     parser.add_argument('--method', type=str, default='all',
                         choices=['vqf_olsson', 'vqf_olsson_heading_correction',
                                  'opensense', 'kf_gframe_olsson', 'kf_gframe_optimized',
-                                 'kf_gframe_opensim', 'vqf_ik',
+                                 'kf_gframe_opensim', 'kf_gframe_pca', 'vqf_ik',
                                  'rnno', 'rnno_olsson', 'rnno_optimized', 'rnno_opensim', 'all'],
                         help='Estimation method (default: all)')
     parser.add_argument('--subject', type=str, default='Subject08',

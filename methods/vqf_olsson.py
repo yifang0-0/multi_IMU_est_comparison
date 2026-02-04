@@ -1,23 +1,16 @@
 """VQF + Olsson joint angle estimation method."""
-import numpy as np
 import qmt
 from .shared import olsson_estimate_hinge_joint_axes, calculate_joint_angle
 
 
-def run_vqf_olsson(acc_prox, gyr_prox, acc_dist, gyr_dist, fs):
-    """Estimate joint angle using VQF + Olsson method.
-
-    Args:
-        acc_prox: Proximal accelerometer data (N, 3) or (3, N)
-        gyr_prox: Proximal gyroscope data (N, 3) or (3, N)
-        acc_dist: Distal accelerometer data (N, 3) or (3, N)
-        gyr_dist: Distal gyroscope data (N, 3) or (3, N)
-        fs: Sampling frequency in Hz
-
-    Returns:
-        (angle_deg, jhat_prox, jhat_dist, q_rel, q_prox, q_dist): Joint angle in degrees,
-        estimated joint axes, relative quaternion, and segment orientations
-    """
+def run_vqf_olsson(
+    acc_prox,  # proximal accelerometer (N, 3)
+    gyr_prox,  # proximal gyroscope (N, 3)
+    acc_dist,  # distal accelerometer (N, 3)
+    gyr_dist,  # distal gyroscope (N, 3)
+    fs,        # sampling frequency in Hz
+):
+    """Estimate joint angle using VQF + Olsson, returns (angle_deg, jhat_prox, jhat_dist, q_rel, q_prox, q_dist)."""
     # Estimate orientations using VQF
     q_prox = qmt.oriEstOfflineVQF(gyr_prox, acc_prox, params={'Ts': 1.0/fs})
     q_dist = qmt.oriEstOfflineVQF(gyr_dist, acc_dist, params={'Ts': 1.0/fs})
@@ -32,21 +25,14 @@ def run_vqf_olsson(acc_prox, gyr_prox, acc_dist, gyr_dist, fs):
     return angle_deg, jhat_prox, jhat_dist, q_rel, q_prox, q_dist
 
 
-def run_vqf_olsson_heading_corrected(acc_prox, gyr_prox, acc_dist, gyr_dist, fs):
-    """Estimate joint angle using VQF + Olsson + heading drift correction.
-
-    Builds on run_vqf_olsson by applying qmt.headingCorrection to remove yaw drift.
-
-    Args:
-        acc_prox: Proximal accelerometer data (N, 3) or (3, N)
-        gyr_prox: Proximal gyroscope data (N, 3) or (3, N)
-        acc_dist: Distal accelerometer data (N, 3) or (3, N)
-        gyr_dist: Distal gyroscope data (N, 3) or (3, N)
-        fs: Sampling frequency in Hz
-
-    Returns:
-        angle_deg: Joint angle in degrees, shape (N,)
-    """
+def run_vqf_olsson_heading_corrected(
+    acc_prox,  # proximal accelerometer (N, 3)
+    gyr_prox,  # proximal gyroscope (N, 3)
+    acc_dist,  # distal accelerometer (N, 3)
+    gyr_dist,  # distal gyroscope (N, 3)
+    fs,        # sampling frequency in Hz
+):
+    """Estimate joint angle using VQF + Olsson with heading drift correction, returns angle_deg."""
     Ts = 1.0 / fs
 
     # Get base VQF+Olsson results (raw orientations and estimated joint axes)
@@ -57,7 +43,7 @@ def run_vqf_olsson_heading_corrected(acc_prox, gyr_prox, acc_dist, gyr_dist, fs)
     # Apply heading correction to raw VQF orientations
     # headingCorrection returns: (quat2Corr, delta, deltaFilt, rating, state)
     # Only the distal quaternion is corrected; proximal remains unchanged
-    t = qmt.timeVec(N=q_prox.shape[0], Ts=Ts)
+    t = qmt.timeVec(N=q_prox.shape[0], Ts=Ts)  # type: ignore[union-attr]
     q_dist_corr, *_ = qmt.headingCorrection(
         gyr1=gyr_prox, gyr2=gyr_dist,
         acc1=acc_prox, acc2=acc_dist,

@@ -1,49 +1,35 @@
 """Kalman filter with gravity frame constraints for dual-IMU joint angle estimation."""
 import numpy as np
 import qmt
-from scipy.optimize import minimize
 
 from constants import FS, T as DT, ACC_OUTLIER_THRESHOLD
 from calTools import (
     integrateGyr, quatmultiply, EXPq, quat2matrix, crossM,
     approx_derivative, calc_acc_at_center
 )
-from .shared import olsson_estimate_hinge_joint_axes, calculate_joint_angle
-
-OPENSIM_JOINT_AXES = {
-    # 'knee': np.array([-0.103, -0.156, 0.982]),
-    'knee': np.array([0,0, 1]),
-    # 'ankle': np.array([-0.585, -0.311, -0.749]),
-    'ankle': np.array([-0.6, -0.3, -0.75]),
-}
+from .shared import calculate_joint_angle
+from .axis import estimate_joint_axis, OPENSIM_JOINT_AXES
 
 
 
 
-def run_kf_gframe(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, r1=None, r2=None,
-                  cov_w_scale=1e-2, cov_lnk_scale=0.35**2 * 10,
-                  axis_mode='fixed', euler_axes='zyx',
-                  gt_angles=None, calib_samples=3000, joint=None):
-    """Estimate joint angle using Kalman filter with gravity frame constraints.
-
-    Args:
-        acc_prox: Proximal IMU accelerometer data, shape (N, 3) or (3, N)
-        gyr_prox: Proximal IMU gyroscope data, shape (N, 3) or (3, N)
-        acc_dist: Distal IMU accelerometer data, shape (N, 3) or (3, N)
-        gyr_dist: Distal IMU gyroscope data, shape (N, 3) or (3, N)
-        fs: Sampling frequency in Hz
-        r1, r2: Lever arms. If None, auto-estimated from data.
-        cov_w_scale: Scale for process noise covariance (default: 1e-2).
-        cov_lnk_scale: Scale for measurement noise covariance (default: 0.35**2 * 10).
-        axis_mode: Joint axis estimation mode: 'fixed', 'olsson', 'optimize', or 'opensim'.
-        euler_axes: Euler angle extraction axes for 'fixed' mode (default: 'zyx').
-        gt_angles: Ground truth angles for 'optimize' mode (degrees).
-        calib_samples: Number of samples for axis optimization (default: 3000).
-        joint: Joint name ('knee' or 'ankle') - required for 'opensim' mode.
-
-    Returns:
-        (angle_deg, r1, r2, jhat, q_rel): Joint angle in degrees, lever arms, axis vector, and relative quaternion.
-    """
+def run_kf_gframe(
+    acc_prox,          # proximal accelerometer (N, 3) or (3, N)
+    gyr_prox,          # proximal gyroscope (N, 3) or (3, N)
+    acc_dist,          # distal accelerometer (N, 3) or (3, N)
+    gyr_dist,          # distal gyroscope (N, 3) or (3, N)
+    fs,                # sampling frequency in Hz
+    r1=None,           # lever arm 1, auto-estimated if None
+    r2=None,           # lever arm 2, auto-estimated if None
+    cov_w_scale=1e-2,
+    cov_lnk_scale=0.35**2 * 10,
+    axis_mode='fixed',    # 'fixed', 'olsson', 'optimize', or 'opensim'
+    euler_axes='zyx',     # Euler axes for 'fixed' mode
+    gt_angles=None,       # ground truth for 'optimize' mode (degrees)
+    calib_samples=3000,   # samples for axis optimization
+    joint=None,           # 'knee' or 'ankle' for 'opensim' mode
+):
+    """Estimate joint angle using KF with gravity constraints, returns (angle_deg, r1, r2, jhat, q_rel)."""
     # Ensure shape is (3, N) for KF processing
     if acc_prox.shape[0] != 3:
         acc1, gyr1 = acc_prox.T, gyr_prox.T
@@ -74,34 +60,23 @@ def run_kf_gframe(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, r1=None, r2=None,
     # Compute relative quaternion
     q_rel = qmt.qmult(qmt.qinv(q1_all), q2_all)
 
-    # Joint axis estimation based on mode
+    # Map legacy axis_mode names to unified method names
+    method_map = {'optimize': 'optimized', 'pca_omega': 'pca_rotvec'}
+    axis_method = method_map.get(axis_mode, axis_mode)
+
+    # Joint axis estimation using unified API
     if axis_mode == 'fixed':
-        angle_deg = np.degrees(qmt.eulerAngles(q_rel, axes=euler_axes)[:, 0])
-        axis_map = {'zyx': [0, 0, 1], 'xyz': [1, 0, 0], 'yxz': [0, 1, 0],
-                    'zxy': [0, 0, 1], 'xzy': [1, 0, 0], 'yzx': [0, 1, 0]}
-        jhat = np.array(axis_map.get(euler_axes, [0, 0, 1]), dtype=float)
-
-    elif axis_mode == 'olsson':
-        # Olsson expects shape (N, 3), so transpose from (3, N)
-        jhat, _ = olsson_estimate_hinge_joint_axes(acc1.T, acc2.T, gyr1.T, gyr2.T)
-        angle_deg = calculate_joint_angle(q_rel, jhat)
-
-    elif axis_mode == 'optimize':
-        if gt_angles is None:
-            raise ValueError("axis_mode='optimize' requires gt_angles")
-        jhat = _optimize_joint_axis(q_rel, gt_angles, calib_samples)
-        angle_deg = calculate_joint_angle(q_rel, jhat)
-
-    elif axis_mode == 'opensim':
-        if joint is None:
-            raise ValueError("axis_mode='opensim' requires joint parameter")
-        if joint not in OPENSIM_JOINT_AXES:
-            raise ValueError(f"Unknown joint: {joint}")
-        jhat = OPENSIM_JOINT_AXES[joint].copy()
-        angle_deg = calculate_joint_angle(q_rel, jhat)
-
+        # Fixed mode uses Euler angles directly
+        angle_deg = np.degrees(qmt.eulerAngles(q_rel, axes=euler_axes)[:, 0])  # type: ignore[index]
+        jhat = estimate_joint_axis(q_rel, axis_method='fixed', euler_axes=euler_axes)
     else:
-        raise ValueError(f"Unknown axis_mode: {axis_mode}")
+        # All other modes use estimate_joint_axis with (N, 3) shaped IMU data
+        jhat = estimate_joint_axis(
+            q_rel, axis_method=axis_method, gt_angles=gt_angles,
+            acc_prox=acc1.T, gyr_prox=gyr1.T, acc_dist=acc2.T, gyr_dist=gyr2.T,
+            correct_sign=True, joint=joint, calib_samples=calib_samples
+        )
+        angle_deg = calculate_joint_angle(q_rel, jhat)
 
     return angle_deg, r1, r2, jhat, q_rel
 
@@ -110,12 +85,18 @@ def run_kf_gframe_olsson(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, r1=None, r2
     """KF with gravity frame using Olsson joint axis estimation."""
     return run_kf_gframe(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, r1=r1, r2=r2, axis_mode='olsson')
 
+def run_kf_gframe_pca(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, r1=None, r2=None):
+    """KF with gravity frame using PCA-based joint axis estimation."""
+    return run_kf_gframe(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, r1=r1, r2=r2, axis_mode='pca_omega')
 
-def run_kf_gframe_optimized(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, gt_angles, r1=None, r2=None, calib_samples=None):
-    """KF with gravity frame using optimized joint axis (requires ground truth).
 
-    By default uses full dataset for optimization to avoid overfitting to short windows.
-    """
+def run_kf_gframe_optimized(
+    acc_prox, gyr_prox, acc_dist, gyr_dist, fs,
+    gt_angles,             # ground truth angles (degrees), required
+    r1=None, r2=None,
+    calib_samples=None,    # defaults to len(gt_angles) for full dataset
+):
+    """KF with gravity frame using optimized joint axis (requires ground truth)."""
     if calib_samples is None:
         calib_samples = len(gt_angles)  # Use full dataset by default
     return run_kf_gframe(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, r1=r1, r2=r2,
@@ -128,54 +109,14 @@ def run_kf_gframe_opensim(acc_prox, gyr_prox, acc_dist, gyr_dist, fs, joint, r1=
                          axis_mode='opensim', joint=joint)
 
 
-def _optimize_joint_axis(q_rel, gt_angles, calib_samples):
-    """Find joint axis minimizing RMSE against ground truth."""
-    n = min(calib_samples, len(gt_angles), len(q_rel))
-    q_calib, gt_calib = q_rel[:n], gt_angles[:n]
-
-    def spherical_to_cart(theta, phi):
-        return np.array([np.sin(theta)*np.cos(phi), np.sin(theta)*np.sin(phi), np.cos(theta)])
-
-    def objective(params):
-        jhat = spherical_to_cart(*params)
-        angle_est = calculate_joint_angle(q_calib, jhat)
-        return np.sqrt(np.mean((gt_calib - angle_est)**2))
-
-    # 4x8 grid over spherical coordinates for better coverage
-    init_points = [(theta, phi)
-                   for theta in np.linspace(0.01, np.pi - 0.01, 4)
-                   for phi in np.linspace(-np.pi, np.pi, 8, endpoint=False)]
-    best = min(
-        (minimize(objective, init, method='L-BFGS-B',
-                  bounds=[(0, np.pi), (-np.pi, np.pi)])
-         for init in init_points),
-        key=lambda r: r.fun
-    )
-    jhat = spherical_to_cart(*best.x)
-
-    # Sign check via correlation - pick sign with better correlation to GT
-    angle_pos = calculate_joint_angle(q_calib, jhat)
-    angle_neg = calculate_joint_angle(q_calib, -jhat)
-    if np.corrcoef(angle_neg, gt_calib)[0, 1] > np.corrcoef(angle_pos, gt_calib)[0, 1]:
-        jhat = -jhat
-
-    return jhat
-
-
-
-def estimate_lever_arms(acc1, gyr1, acc2, gyr2, fs, iterations=25, step=0.7):
-    """Estimate lever arms from dual-IMU data using Gauss-Newton optimization.
-
-    Args:
-        acc1, gyr1: Proximal IMU data, shape (3, N) or (N, 3)
-        acc2, gyr2: Distal IMU data, shape (3, N) or (N, 3)
-        fs: Sampling frequency
-        iterations: Number of Gauss-Newton iterations
-        step: Step size for updates
-
-    Returns:
-        r1, r2: Estimated lever arm vectors (3,)
-    """
+def estimate_lever_arms(
+    acc1, gyr1,        # proximal IMU data (3, N) or (N, 3)
+    acc2, gyr2,        # distal IMU data (3, N) or (N, 3)
+    fs,                # sampling frequency
+    iterations=25,     # Gauss-Newton iterations
+    step=0.7,          # step size for updates
+):
+    """Estimate lever arms from dual-IMU data, returns (r1, r2) vectors."""
     # Ensure shape is (3, N)
     if acc1.shape[0] != 3:
         acc1, gyr1 = acc1.T, gyr1.T
@@ -226,28 +167,15 @@ def estimate_lever_arms(acc1, gyr1, acc2, gyr2, fs, iterations=25, step=0.7):
 
 
 def process_orientation_KF_Gframe(
-    data,
-    q1_init=None,
-    cov_w=None,
-    cov_lnk=None,
-    run_dynamic_update=True,
-    run_measurement_update=True,
-    use_raw_gyro=False,
+    data,                        # dict with gyr_1, gyr_2, acc_1, acc_2, r1, r2
+    q1_init=None,                # initial quaternion, default [1, 0, 0, 0]
+    cov_w=None,                  # process noise covariance (6x6)
+    cov_lnk=None,                # measurement noise covariance (3x3)
+    run_dynamic_update=True,     # run prediction step
+    run_measurement_update=True, # run measurement update step
+    use_raw_gyro=False,          # use raw gyro instead of filtered
 ):
-    """Process orientation using Extended Kalman Filter with gravity frame constraints.
-
-    Args:
-        data: Dictionary containing sensor data (gyr_1, gyr_2, acc_1, acc_2, r1, r2).
-        q1_init: Initial orientation quaternion (default: [1, 0, 0, 0]).
-        cov_w: Process noise covariance (6x6). Default: np.eye(6) * 1e-2.
-        cov_lnk: Measurement noise covariance (3x3). Default: np.eye(3) * 0.35**2 * 10.
-        run_dynamic_update: Whether to run prediction step (default: True).
-        run_measurement_update: Whether to run measurement update step (default: True).
-        use_raw_gyro: Use raw gyro data instead of filtered (default: False).
-
-    Returns:
-        orientation_s1, orientation_s2, P_list: Estimated orientations and covariance history.
-    """
+    """EKF with gravity frame constraints, returns (orientation_s1, orientation_s2, P_list)."""
     if q1_init is None:
         q1_init = np.array([1, 0, 0, 0])
     if cov_w is None:
