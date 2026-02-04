@@ -8,7 +8,7 @@ from calTools import (
     approx_derivative, calc_acc_at_center
 )
 from .shared import calculate_joint_angle
-from .axis import estimate_joint_axis, OPENSIM_JOINT_AXES
+from .axis import estimate_joint_axis
 
 
 
@@ -79,6 +79,91 @@ def run_kf_gframe(
         angle_deg = calculate_joint_angle(q_rel, jhat)
 
     return angle_deg, r1, r2, jhat, q_rel
+
+
+def run_kf_gframe_all_variants(
+    acc_prox,             # proximal accelerometer (N, 3) or (3, N)
+    gyr_prox,             # proximal gyroscope (N, 3) or (3, N)
+    acc_dist,             # distal accelerometer (N, 3) or (3, N)
+    gyr_dist,             # distal gyroscope (N, 3) or (3, N)
+    fs,                   # sampling frequency in Hz
+    r1=None,              # lever arm 1, auto-estimated if None
+    r2=None,              # lever arm 2, auto-estimated if None
+    cov_w_scale=1e-2,
+    cov_lnk_scale=0.35**2 * 10,
+    gt_angles=None,       # ground truth for 'optimized' mode
+    calib_samples=3000,   # samples for optimization
+    joint=None,           # joint name for 'opensim' mode
+):
+    """Run all KF_Gframe variants with shared KF computation, returns dict of (angle_deg, jhat, q_rel)."""
+    # Ensure shape is (3, N) for KF processing
+    if acc_prox.shape[0] != 3:
+        acc1, gyr1 = acc_prox.T, gyr_prox.T
+        acc2, gyr2 = acc_dist.T, gyr_dist.T
+    else:
+        acc1, gyr1 = acc_prox, gyr_prox
+        acc2, gyr2 = acc_dist, gyr_dist
+
+    # Estimate lever arms once
+    if r1 is None or r2 is None:
+        r1, r2 = estimate_lever_arms(acc1, gyr1, acc2, gyr2, fs)
+
+    # Covariance matrices
+    cov_w = np.eye(6) * cov_w_scale
+    cov_lnk = np.eye(3) * cov_lnk_scale
+
+    # Run KF once (expensive)
+    q1_all, q2_all, _ = process_orientation_KF_Gframe(
+        data={
+            'gyr_1': gyr1, 'gyr_2': gyr2,
+            'acc_1': acc1, 'acc_2': acc2,
+            'r1': r1, 'r2': r2
+        },
+        cov_w=cov_w,
+        cov_lnk=cov_lnk,
+    )
+
+    # Compute relative quaternion once
+    q_rel = qmt.qmult(qmt.qinv(q1_all), q2_all)
+
+    # IMU data in (N, 3) for axis estimation
+    acc_prox_n3, gyr_prox_n3 = acc1.T, gyr1.T
+    acc_dist_n3, gyr_dist_n3 = acc2.T, gyr2.T
+
+    results = {}
+
+    # Olsson (always computed)
+    jhat = estimate_joint_axis(
+        q_rel, axis_method='olsson',
+        acc_prox=acc_prox_n3, gyr_prox=gyr_prox_n3,
+        acc_dist=acc_dist_n3, gyr_dist=gyr_dist_n3, correct_sign=True
+    )
+    angle_deg = calculate_joint_angle(q_rel, jhat)
+    results['olsson'] = (angle_deg, jhat, q_rel)
+
+    # Optimized (if ground truth provided)
+    if gt_angles is not None:
+        jhat = estimate_joint_axis(
+            q_rel, axis_method='optimized', gt_angles=gt_angles,
+            acc_prox=acc_prox_n3, gyr_prox=gyr_prox_n3,
+            acc_dist=acc_dist_n3, gyr_dist=gyr_dist_n3,
+            correct_sign=True, calib_samples=calib_samples
+        )
+        angle_deg = calculate_joint_angle(q_rel, jhat)
+        results['optimized'] = (angle_deg, jhat, q_rel)
+
+    # PCA (always computed, requires only q_rel)
+    jhat = estimate_joint_axis(q_rel, axis_method='pca_rotvec', correct_sign=True)
+    angle_deg = calculate_joint_angle(q_rel, jhat)
+    results['pca'] = (angle_deg, jhat, q_rel)
+
+    # OpenSim (if joint provided)
+    if joint is not None:
+        jhat = estimate_joint_axis(q_rel, axis_method='opensim', joint=joint, correct_sign=True)
+        angle_deg = calculate_joint_angle(q_rel, jhat)
+        results['opensim'] = (angle_deg, jhat, q_rel)
+
+    return results
 
 
 def estimate_lever_arms(

@@ -63,7 +63,7 @@ def run_rnno(
         q_rel = compute_rnno_orientation(acc_prox, gyr_prox, acc_dist, gyr_dist, fs)
 
     # Map legacy axis_mode names to unified method names
-    method_map = {'optimize': 'optimized'}
+    method_map = {'optimize': 'optimized', 'pca_omega': 'pca_rotvec'}
     axis_method = method_map.get(axis_mode, axis_mode)
 
     # Joint axis estimation using unified API
@@ -120,5 +120,12 @@ def run_rnno_all_variants(
             axis_mode='opensim', joint=joint, q_rel=q_rel
         )
         results['opensim'] = (angle_deg, jhat, q_rel)
+
+    # PCA (always computed, requires only q_rel)
+    angle_deg, _, _, jhat, _ = run_rnno(
+        acc_prox, gyr_prox, acc_dist, gyr_dist, fs,
+        axis_mode='pca_omega', q_rel=q_rel
+    )
+    results['pca'] = (angle_deg, jhat, q_rel)
 
     return results

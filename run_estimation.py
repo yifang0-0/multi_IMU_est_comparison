@@ -25,7 +25,8 @@ from constants import VALID_SUBJECTS
 from methods.shared import load_mot, calculate_joint_angle
 from methods import (
     run_vqf_olsson, run_vqf_olsson_heading_corrected,
-    run_kf_gframe, run_rnno, run_rnno_all_variants
+    run_kf_gframe, run_kf_gframe_all_variants,
+    run_rnno, run_rnno_all_variants
 )
 from methods.shared import calculate_joint_angle
 from plotting import plot_time_series_error, plot_error_comparison
@@ -179,16 +180,60 @@ def process_kf_gframe(data, axis_mode, errors_dict, angles_dict=None):
     elif axis_mode == 'opensim':
         kwargs['joint'] = joint
 
-    angle_deg, _, _, jhat, _ = run_kf_gframe(
+    angle_deg, _, _, jhat, q_rel = run_kf_gframe(
         data['acc_prox'], data['gyr_prox'],
         data['acc_dist'], data['gyr_dist'],
         data['fs'], **kwargs
     )
 
-    if axis_mode == 'opensim':
+    # For PCA, pick axis sign with better correlation
+    if axis_mode == 'pca_omega':
+        angle_neg = calculate_joint_angle(q_rel, -jhat)
+        gt = data['gt']
+        n = min(len(angle_deg), len(gt))
+        if abs(np.corrcoef(angle_neg[:n], gt[:n])[0, 1]) > abs(np.corrcoef(angle_deg[:n], gt[:n])[0, 1]):
+            angle_deg = angle_neg
+    elif axis_mode == 'opensim':
         print(f"Joint axis: [{jhat[0]:.3f}, {jhat[1]:.3f}, {jhat[2]:.3f}]")
 
     _eval_method(f'kf_gframe_{axis_mode}', angle_deg, data['gt'], errors_dict, angles_dict)
+
+
+def process_kf_gframe_all(data, errors_dict, angles_dict=None):
+    """Run all KF_Gframe variants with shared KF computation."""
+    print("\n=== KF_Gframe (all variants, shared orientation) ===")
+    joint = 'knee' if 'knee' in data['joint_config']['gt_column'] else 'ankle'
+
+    results = run_kf_gframe_all_variants(
+        data['acc_prox'], data['gyr_prox'], data['acc_dist'], data['gyr_dist'],
+        data['fs'], gt_angles=data['gt'], calib_samples=3000, joint=joint
+    )
+
+    gt = data['gt']
+
+    # Process olsson variant (with axis sign correction)
+    angle_deg, jhat, q_rel = results['olsson']
+    angle_neg = calculate_joint_angle(q_rel, -jhat)
+    n = min(len(angle_deg), len(gt))
+    if abs(np.corrcoef(angle_neg[:n], gt[:n])[0, 1]) > abs(np.corrcoef(angle_deg[:n], gt[:n])[0, 1]):
+        angle_deg = angle_neg
+    _eval_method('kf_gframe_olsson', angle_deg, gt, errors_dict, angles_dict)
+
+    # Process optimized variant
+    angle_deg, jhat, _ = results['optimized']
+    _eval_method('kf_gframe_optimize', angle_deg, gt, errors_dict, angles_dict)
+
+    # Process PCA variant (with axis sign correction)
+    angle_deg, jhat, q_rel = results['pca']
+    angle_neg = calculate_joint_angle(q_rel, -jhat)
+    if abs(np.corrcoef(angle_neg[:n], gt[:n])[0, 1]) > abs(np.corrcoef(angle_deg[:n], gt[:n])[0, 1]):
+        angle_deg = angle_neg
+    _eval_method('kf_gframe_pca', angle_deg, gt, errors_dict, angles_dict)
+
+    # Process opensim variant
+    angle_deg, jhat, _ = results['opensim']
+    print(f"OpenSim joint axis: [{jhat[0]:.3f}, {jhat[1]:.3f}, {jhat[2]:.3f}]")
+    _eval_method('kf_gframe_opensim', angle_deg, gt, errors_dict, angles_dict)
 
 
 def process_rnno(data, axis_mode, errors_dict, angles_dict=None):
@@ -208,14 +253,14 @@ def process_rnno(data, axis_mode, errors_dict, angles_dict=None):
         data['fs'], **kwargs
     )
 
-    # For olsson, pick axis sign with better correlation
-    if axis_mode == 'olsson':
+    # For olsson/pca, pick axis sign with better correlation
+    if axis_mode in ('olsson', 'pca_omega'):
         angle_neg = calculate_joint_angle(q_rel, -jhat)
         gt = data['gt']
         n = min(len(angle_deg), len(gt))
         if abs(np.corrcoef(angle_neg[:n], gt[:n])[0, 1]) > abs(np.corrcoef(angle_deg[:n], gt[:n])[0, 1]):
             angle_deg = angle_neg
-        method_name = 'rnno+olsson'
+        method_name = 'rnno+olsson' if axis_mode == 'olsson' else 'rnno_pca'
     else:
         if axis_mode == 'opensim':
             print(f"Joint axis: [{jhat[0]:.3f}, {jhat[1]:.3f}, {jhat[2]:.3f}]")
@@ -251,6 +296,13 @@ def process_rnno_all(data, errors_dict, angles_dict=None):
     angle_deg, jhat, _ = results['opensim']
     print(f"OpenSim joint axis: [{jhat[0]:.3f}, {jhat[1]:.3f}, {jhat[2]:.3f}]")
     _eval_method('rnno_opensim', angle_deg, gt, errors_dict, angles_dict)
+
+    # Process PCA variant (with axis sign correction)
+    angle_deg, jhat, q_rel = results['pca']
+    angle_neg = calculate_joint_angle(q_rel, -jhat)
+    if abs(np.corrcoef(angle_neg[:n], gt[:n])[0, 1]) > abs(np.corrcoef(angle_deg[:n], gt[:n])[0, 1]):
+        angle_deg = angle_neg
+    _eval_method('rnno_pca', angle_deg, gt, errors_dict, angles_dict)
 
 
 def process_opensense(
@@ -319,11 +371,14 @@ def run_single_subject(joint, method, subject_id, no_plot=True, export=False):
     angles_dict = {} if export else None
 
     # KF_Gframe variants
-    kf_modes = [('kf_gframe_olsson', 'olsson'), ('kf_gframe_optimized', 'optimize'),
-                ('kf_gframe_pca', 'pca_omega'), ('kf_gframe_opensim', 'opensim')]
-    for method_name, axis_mode in kf_modes:
-        if method in (method_name, 'all'):
-            process_kf_gframe(data, axis_mode, errors_dict, angles_dict)
+    if method == 'all':
+        process_kf_gframe_all(data, errors_dict, angles_dict)
+    else:
+        kf_modes = [('kf_gframe_olsson', 'olsson'), ('kf_gframe_optimized', 'optimize'),
+                    ('kf_gframe_pca', 'pca_omega'), ('kf_gframe_opensim', 'opensim')]
+        for method_name, axis_mode in kf_modes:
+            if method == method_name:
+                process_kf_gframe(data, axis_mode, errors_dict, angles_dict)
 
     # VQF variants
     if method == 'vqf_olsson':  # Excluded from 'all' due to poor performance
@@ -346,6 +401,8 @@ def run_single_subject(joint, method, subject_id, no_plot=True, export=False):
         process_rnno(data, 'optimize', errors_dict, angles_dict)
     elif method == 'rnno_opensim':
         process_rnno(data, 'opensim', errors_dict, angles_dict)
+    elif method == 'rnno_pca':
+        process_rnno(data, 'pca_omega', errors_dict, angles_dict)
 
     # Export time series if requested
     if export and angles_dict:
@@ -444,7 +501,7 @@ def main():
                         choices=['vqf_olsson', 'vqf_olsson_heading_correction',
                                  'opensense', 'kf_gframe_olsson', 'kf_gframe_optimized',
                                  'kf_gframe_opensim', 'kf_gframe_pca', 'vqf_ik',
-                                 'rnno', 'rnno_olsson', 'rnno_optimized', 'rnno_opensim', 'all'],
+                                 'rnno', 'rnno_olsson', 'rnno_optimized', 'rnno_opensim', 'rnno_pca', 'all'],
                         help='Estimation method (default: all)')
     parser.add_argument('--subject', type=str, default='Subject08',
                         help='Subject ID or "all" for all valid subjects (default: Subject08)')
