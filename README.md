@@ -91,40 +91,13 @@ data/Subject08/
 │       └── ikResults/walking_IK.mot      # Motion capture ground truth
 ```
 
-## Project Structure
-
-```
-├── run_estimation.py      # Unified entry point
-├── utils.py               # Data loading, signal alignment
-├── calTools.py            # Quaternion operations, Jacobians, filters
-├── constants.py           # Physical constants
-├── plotting.py            # Visualization
-├── methods/
-│   ├── vqf_olsson.py      # VQF+Olsson and heading correction
-│   ├── kf_gframe.py       # Kalman filter implementation
-│   └── shared.py          # Common utilities (Olsson, angle calculation)
-├── plots/                 # Generated comparison plots
-└── results/               # RMSE summary CSVs
-```
-
 ## Valid Subjects
 
 5 subjects are valid for analysis: Subject02, Subject03, Subject04, Subject07, Subject08
 
 **Excluded subjects:**
-- Subject01, Subject11: Missing data files
+- Subject01: Poor data quality (96° RMSE); foot sensor not mapped
 - Subject05: Malformed XML (nested comments)
 - Subject06, Subject10: IMU data at 40 Hz (expected 100 Hz)
-- Subject09: Inverted IMU attachment
-
-## Key Libraries
-
-- [qmt](https://github.com/dlaidig/qmt) - Quaternion math toolbox (VQF, Olsson, heading correction)
-- numpy, scipy - Numerical processing
-- matplotlib - Visualization
-
-## Implementation Notes
-
-- **Heading Correction**: Uses `qmt.headingCorrection` with the Olsson-estimated joint axis and swing-twist decomposition (`qmt.quatProject`) for proper angle extraction
-- **KF Gravity Frame**: Constrains both IMU orientations to share a common gravity direction, with auto-estimated lever arms
-- **Signal Alignment**: Cross-correlation used to align IMU estimates with motion capture ground truth
+- Subject09: Inverted IMU attachment; foot sensor not mapped
+- Subject11: Malformed XML; foot sensor not mapped
