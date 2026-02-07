@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "multi-imu-est-comparison"
+version = "0.1.0"
+description = "Multi-IMU joint angle estimation comparison"
+authors = [{ name = "Daniel Weber", email = "daniel.om.weber@gmail.com" }]
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "pandas",
+    "scipy",
+    "matplotlib",
+    "tqdm",
+    "requests",
+    "qmt",
+    "dfjimu",
+]
+
+[project.optional-dependencies]
+rnno = ["imt-imt @ git+https://github.com/simon-bachhuber/imt.git"]
+optimize = ["optuna"]
+all = ["multi-imu-est-comparison[rnno,optimize]"]
+
+[tool.setuptools]
+py-modules = []
+
+[tool.pixi.workspace]
+channels = ["conda-forge", "opensim-org"]
+platforms = ["osx-arm64"]
+
+[tool.pixi.dependencies]
+numpy = "*"
+pandas = "*"
+matplotlib = "*"
+scipy = "*"
+tqdm = "*"
+requests = "*"
+
+[tool.pixi.pypi-dependencies]
+qmt = "*"
+dfjimu = "*"
+
+[tool.pixi.feature.rnno.pypi-dependencies]
+imt = "*"
+
+[tool.pixi.feature.optimize.pypi-dependencies]
+optuna = "*"
+
+[tool.pixi.feature.opensim.dependencies]
+opensim = ">=4.5.2,<5"
+
+[tool.pixi.environments]
+default = { features = ["rnno", "optimize"] }
+opensim = { features = ["rnno", "optimize", "opensim"] }

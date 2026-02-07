@@ -9,10 +9,12 @@ Multi-IMU joint angle estimation comparison project. See README.md for user docu
 ## Commands
 
 ```bash
-# Setup environment
-uv venv
-source .venv/bin/activate
-uv pip install -r requirements.txt
+# Pixi (recommended — also supports opensim)
+pixi install                           # core + kf + rnno + optimize
+pixi install --environment opensim     # adds OpenSim
+
+# uv (opensim not available via pip — use pixi for opensim)
+uv sync --all-extras                   # core + rnno + optimize
 
 # Download dataset (~5.5GB from SimTK)
 python download_simtk_dataset.py
