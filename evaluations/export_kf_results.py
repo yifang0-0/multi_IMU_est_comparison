@@ -6,7 +6,7 @@ import pandas as pd
 from tqdm import tqdm
 
 from run_estimation import prepare_data
-from methods.kf_gframe import run_kf_gframe_olsson
+from methods import run_kf_gframe
 
 VALID_SUBJECTS = ['Subject01', 'Subject02', 'Subject03', 'Subject04',
                   'Subject07', 'Subject08', 'Subject11']
@@ -17,10 +17,10 @@ def export_single(subject_id, joint, output_dir):
     """Export kf_gframe results for one subject/joint."""
     data = prepare_data(joint, subject_id)
 
-    angle_deg, r1, r2, jhat, q_rel = run_kf_gframe_olsson(
+    angle_deg, r1, r2, jhat, q_rel = run_kf_gframe(
         data['acc_prox'], data['gyr_prox'],
         data['acc_dist'], data['gyr_dist'],
-        data['fs']
+        data['fs'], axis_mode='olsson',
     )
 
     # Truncate to common length

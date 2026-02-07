@@ -5,7 +5,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import numpy as np
 from run_estimation import prepare_data
-from methods import run_kf_gframe_optimized, run_rnno_optimized
+from methods import run_kf_gframe, run_rnno
 
 
 def angular_difference(v1, v2):
@@ -34,17 +34,17 @@ def main():
         data = prepare_data(joint, 'Subject08')
 
         # Run KF_gframe with optimized axis (returns q_rel)
-        _, r1, r2, jhat_kf, q_rel_kf = run_kf_gframe_optimized(
+        _, r1, r2, jhat_kf, q_rel_kf = run_kf_gframe(
             data['acc_prox'], data['gyr_prox'],
             data['acc_dist'], data['gyr_dist'],
-            data['fs'], data['gt']
+            data['fs'], axis_mode='optimize', gt_angles=data['gt'],
         )
 
         # Run RNNO with optimized axis (returns q_rel)
-        _, _, _, jhat_rnno, q_rel_rnno = run_rnno_optimized(
+        _, _, _, jhat_rnno, q_rel_rnno = run_rnno(
             data['acc_prox'], data['gyr_prox'],
             data['acc_dist'], data['gyr_dist'],
-            data['fs'], data['gt']
+            data['fs'], axis_mode='optimize', gt_angles=data['gt'],
         )
 
         print(f"  KF_gframe axis: [{jhat_kf[0]:7.4f}, {jhat_kf[1]:7.4f}, {jhat_kf[2]:7.4f}]")

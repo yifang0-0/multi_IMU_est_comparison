@@ -12,7 +12,7 @@ from pathlib import Path
 import pandas as pd
 
 from run_estimation import prepare_data
-from methods.kf_gframe import estimate_lever_arms
+from dfjimu import estimate_lever_arms
 from dfjimu.mekf_acc import mekf_acc
 from methods.rnno import compute_rnno_orientation
 from methods.shared import calculate_joint_angle
