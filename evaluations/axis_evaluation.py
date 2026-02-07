@@ -12,7 +12,8 @@ from pathlib import Path
 import pandas as pd
 
 from run_estimation import prepare_data
-from methods.kf_gframe import process_orientation_KF_Gframe, estimate_lever_arms
+from methods.kf_gframe import estimate_lever_arms
+from dfjimu.mekf_acc import mekf_acc
 from methods.rnno import compute_rnno_orientation
 from methods.shared import calculate_joint_angle
 from methods.axis import AXIS_METHODS, OPENSIM_JOINT_AXES
@@ -83,22 +84,12 @@ def precompute_orientations(
     # === KF_Gframe orientation ===
     print("\nComputing KF_Gframe orientation...")
 
-    # Transpose to (3, N) for KF processing
-    acc1, gyr1 = acc_prox.T, gyr_prox.T
-    acc2, gyr2 = acc_dist.T, gyr_dist.T
-
     # Estimate lever arms
-    r1, r2 = estimate_lever_arms(acc1, gyr1, acc2, gyr2, fs)
+    r1, r2 = estimate_lever_arms(acc_prox, gyr_prox, acc_dist, gyr_dist, fs)
     print(f"Lever arms: r1={r1}, r2={r2}")
 
-    # Run KF
-    q1_all, q2_all, _ = process_orientation_KF_Gframe(
-        data={
-            'gyr_1': gyr1, 'gyr_2': gyr2,
-            'acc_1': acc1, 'acc_2': acc2,
-            'r1': r1, 'r2': r2
-        },
-    )
+    # Run MEKF-acc
+    q1_all, q2_all = mekf_acc(gyr_prox, gyr_dist, acc_prox, acc_dist, r1, r2, fs, np.array([1.0, 0, 0, 0]))
 
     # Compute relative quaternion
     q_rel_kf = qmt.qmult(qmt.qinv(q1_all), q2_all)
