@@ -1,12 +1,12 @@
-"""Optimize MEKF-acc or MAP-acc noise parameters via differential evolution."""
+"""Optimize MEKF-acc or MAP-acc noise parameters via Optuna TPE."""
 import sys
 import os
 import argparse
 import time
-import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor
 import numpy as np
 import qmt
-from scipy.optimize import differential_evolution
+import optuna
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
@@ -20,21 +20,6 @@ from methods.shared import calculate_joint_angle
 from methods.kf_gframe import _Q_COV, _R_DIAG, _P_INIT_DIAG
 
 JOINTS = ['knee', 'ankle']
-
-# Module-level refs set by pool initializer for worker processes
-_GLOBAL_DATASETS = None
-_GLOBAL_OPT_PINIT = False
-_GLOBAL_AXIS_METHOD = 'opensim'
-_GLOBAL_ESTIMATOR = 'mekf'
-
-
-def _init_worker(datasets, opt_pinit, axis_method, estimator='mekf'):
-    """Pool initializer — sets globals in each worker process."""
-    global _GLOBAL_DATASETS, _GLOBAL_OPT_PINIT, _GLOBAL_AXIS_METHOD, _GLOBAL_ESTIMATOR
-    _GLOBAL_DATASETS = datasets
-    _GLOBAL_OPT_PINIT = opt_pinit
-    _GLOBAL_AXIS_METHOD = axis_method
-    _GLOBAL_ESTIMATOR = estimator
 
 
 def precompute_datasets():
@@ -95,7 +80,7 @@ def evaluate_single(ds, Q_cov, R_diag, P_init_diag=1.0, axis_method='opensim'):
     return rmse
 
 
-def evaluate_single_map(ds, cov_w_scale, cov_i_scale, cov_lnk_scale, axis_method='opensim'):
+def evaluate_single_map(ds, cov_w_scale, cov_i_scale, cov_lnk_scale, axis_method='opensim', iterations=10):
     """Run MAP-acc + axis estimation on one dataset, return RMSE in degrees."""
     q1, q2 = map_acc(
         ds['gyr1'], ds['gyr2'], ds['acc1'], ds['acc2'],
@@ -104,6 +89,7 @@ def evaluate_single_map(ds, cov_w_scale, cov_i_scale, cov_lnk_scale, axis_method
         cov_w=np.eye(6) * cov_w_scale,
         cov_i=np.eye(3) * cov_i_scale,
         cov_lnk=np.eye(3) * cov_lnk_scale,
+        iterations=iterations,
     )
 
     q_rel = qmt.qmult(qmt.qinv(q1), q2)
@@ -122,25 +108,46 @@ def evaluate_single_map(ds, cov_w_scale, cov_i_scale, cov_lnk_scale, axis_method
     return rmse
 
 
-def objective(log_params):
-    """Mean RMSE across all datasets. Parameters in log10 space."""
-    rmses = []
-    for ds in _GLOBAL_DATASETS:
-        try:
-            if _GLOBAL_ESTIMATOR == 'map':
-                cov_w = 10 ** log_params[0]
-                cov_i = 10 ** log_params[1]
-                cov_lnk = 10 ** log_params[2]
-                rmses.append(evaluate_single_map(ds, cov_w, cov_i, cov_lnk, _GLOBAL_AXIS_METHOD))
-            else:
-                Q_cov = 10 ** log_params[0]
-                R_diag = 10 ** log_params[1]
-                P_init_diag = 10 ** log_params[2] if _GLOBAL_OPT_PINIT else 1.0
-                rmses.append(evaluate_single(ds, Q_cov, R_diag, P_init_diag, _GLOBAL_AXIS_METHOD))
-        except Exception:
-            rmses.append(50.0)  # penalty
+def _eval_single_wrapper(args):
+    """Top-level wrapper for parallel dataset evaluation."""
+    ds, params, axis_method, estimator, *rest = args
+    iterations = rest[0] if rest else 10
+    try:
+        if estimator == 'map':
+            return evaluate_single_map(ds, params[0], params[1], params[2], axis_method, iterations=iterations)
+        else:
+            return evaluate_single(ds, params[0], params[1], params[2], axis_method)
+    except Exception:
+        return 50.0  # penalty
 
-    return np.mean(rmses)
+
+def make_objective(datasets, bounds, opt_pinit=False, axis_method='opensim',
+                   estimator='mekf', pool=None, map_iterations=10):
+    """Return an Optuna objective closure over the given datasets and settings."""
+    def objective(trial):
+        if estimator == 'map':
+            log_cov_w = trial.suggest_float('log_cov_w', bounds[0][0], bounds[0][1])
+            log_cov_i = trial.suggest_float('log_cov_i', bounds[1][0], bounds[1][1])
+            log_cov_lnk = trial.suggest_float('log_cov_lnk', bounds[2][0], bounds[2][1])
+            params = [10 ** log_cov_w, 10 ** log_cov_i, 10 ** log_cov_lnk]
+        else:
+            log_Q_cov = trial.suggest_float('log_Q_cov', bounds[0][0], bounds[0][1])
+            log_R_diag = trial.suggest_float('log_R_diag', bounds[1][0], bounds[1][1])
+            params = [10 ** log_Q_cov, 10 ** log_R_diag]
+            if opt_pinit:
+                log_P_init = trial.suggest_float('log_P_init', bounds[2][0], bounds[2][1])
+                params.append(10 ** log_P_init)
+            else:
+                params.append(1.0)
+
+        work = [(ds, params, axis_method, estimator, map_iterations) for ds in datasets]
+        if pool is not None:
+            rmses = list(pool.map(_eval_single_wrapper, work))
+        else:
+            rmses = [_eval_single_wrapper(w) for w in work]
+
+        return np.mean(rmses)
+    return objective
 
 
 def compute_rmse_map(datasets, Q_cov, R_diag, P_init_diag=1.0, axis_method='opensim'):
@@ -151,10 +158,10 @@ def compute_rmse_map(datasets, Q_cov, R_diag, P_init_diag=1.0, axis_method='open
     }
 
 
-def compute_rmse_map_map(datasets, cov_w_scale, cov_i_scale, cov_lnk_scale, axis_method='opensim'):
+def compute_rmse_map_map(datasets, cov_w_scale, cov_i_scale, cov_lnk_scale, axis_method='opensim', iterations=10):
     """Evaluate all MAP-acc datasets and return {(subject, joint): rmse} map."""
     return {
-        (ds['subject'], ds['joint']): evaluate_single_map(ds, cov_w_scale, cov_i_scale, cov_lnk_scale, axis_method)
+        (ds['subject'], ds['joint']): evaluate_single_map(ds, cov_w_scale, cov_i_scale, cov_lnk_scale, axis_method, iterations=iterations)
         for ds in datasets
     }
 
@@ -195,53 +202,48 @@ def print_rmse_table(rmse_map, label='', params_str=''):
 
 
 def run_optimization(datasets, bounds, opt_pinit=False, axis_method='opensim',
-                     maxiter=50, popsize=15, seed=42, workers=-1, estimator='mekf'):
-    """Run differential evolution and return best parameters."""
-    # Also set globals in the main process (used by callback's print)
-    global _GLOBAL_DATASETS, _GLOBAL_OPT_PINIT, _GLOBAL_AXIS_METHOD, _GLOBAL_ESTIMATOR
-    _GLOBAL_DATASETS = datasets
-    _GLOBAL_OPT_PINIT = opt_pinit
-    _GLOBAL_AXIS_METHOD = axis_method
-    _GLOBAL_ESTIMATOR = estimator
-
+                     n_trials=200, seed=42, estimator='mekf', workers=-1, map_iterations=10):
+    """Run Optuna TPE optimization and return best parameters."""
     t0 = time.time()
-    gen = [0]
 
-    def callback(xk, convergence):
-        gen[0] += 1
+    def log_trial(study, trial):
+        best = study.best_trial
         if estimator == 'map':
-            cw, ci, cl = 10 ** xk[0], 10 ** xk[1], 10 ** xk[2]
-            print(f"  gen {gen[0]:3d} | conv={convergence:.4f} | "
+            cw = 10 ** best.params['log_cov_w']
+            ci = 10 ** best.params['log_cov_i']
+            cl = 10 ** best.params['log_cov_lnk']
+            print(f"  trial {trial.number:3d} | best={best.value:.4f} | "
                   f"cov_w={cw:.2e} cov_i={ci:.2e} cov_lnk={cl:.2e} | {time.time() - t0:.0f}s")
         else:
-            Q, R = 10 ** xk[0], 10 ** xk[1]
-            print(f"  gen {gen[0]:3d} | conv={convergence:.4f} | "
+            Q = 10 ** best.params['log_Q_cov']
+            R = 10 ** best.params['log_R_diag']
+            print(f"  trial {trial.number:3d} | best={best.value:.4f} | "
                   f"Q={Q:.2e} R={R:.2e} | {time.time() - t0:.0f}s")
 
-    n_workers = workers if workers > 0 else mp.cpu_count()
-    pool = mp.Pool(n_workers, initializer=_init_worker,
-                   initargs=(datasets, opt_pinit, axis_method, estimator))
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    sampler = optuna.samplers.TPESampler(seed=seed)
+    study = optuna.create_study(direction='minimize', sampler=sampler)
 
+    n_workers = workers if workers > 0 else os.cpu_count()
+    pool = ProcessPoolExecutor(max_workers=n_workers)
     try:
-        result = differential_evolution(
-            objective,
-            bounds=bounds,
-            maxiter=maxiter,
-            popsize=popsize,
-            seed=seed,
-            tol=1e-4,
-            workers=pool.map,
-            updating='deferred',
-            disp=True,
-            callback=callback,
-        )
+        objective_fn = make_objective(datasets, bounds, opt_pinit, axis_method, estimator, pool, map_iterations)
+        study.optimize(objective_fn, n_trials=n_trials, callbacks=[log_trial])
     finally:
-        pool.close()
-        pool.join()
+        pool.shutdown()
 
-    params = [10 ** x for x in result.x]
+    best = study.best_trial
+    if estimator == 'map':
+        params = [10 ** best.params['log_cov_w'],
+                  10 ** best.params['log_cov_i'],
+                  10 ** best.params['log_cov_lnk']]
+    else:
+        params = [10 ** best.params['log_Q_cov'],
+                  10 ** best.params['log_R_diag']]
+        if opt_pinit:
+            params.append(10 ** best.params['log_P_init'])
 
-    print(f"\nOptimization finished: {result.nfev} evaluations, success={result.success}")
+    print(f"\nOptimization finished: {len(study.trials)} trials")
     if estimator == 'map':
         print(f"  Best: cov_w={params[0]:.4e}, cov_i={params[1]:.4e}, cov_lnk={params[2]:.4e}")
     else:
@@ -250,9 +252,9 @@ def run_optimization(datasets, bounds, opt_pinit=False, axis_method='opensim',
             print(f", P_init_diag={params[2]:.4e}")
         else:
             print()
-    print(f"  Mean RMSE: {result.fun:.4f}")
+    print(f"  Mean RMSE: {best.value:.4f}")
 
-    return params, result
+    return params, study
 
 
 def _format_params_mekf(Q, R, P, axis_method):
@@ -270,8 +272,7 @@ def main():
     parser = argparse.ArgumentParser(description='Optimize MEKF-acc or MAP-acc noise parameters')
     parser.add_argument('--estimator', type=str, default='mekf', choices=['mekf', 'map'],
                         help='Estimator to optimize (default: mekf)')
-    parser.add_argument('--maxiter', type=int, default=50, help='DE max iterations (default: 50)')
-    parser.add_argument('--popsize', type=int, default=15, help='DE population size (default: 15)')
+    parser.add_argument('--n-trials', type=int, default=200, help='Number of Optuna trials (default: 200)')
     parser.add_argument('--seed', type=int, default=42, help='Random seed (default: 42)')
     parser.add_argument('--per-joint', action='store_true', help='Optimize per-joint separately')
     parser.add_argument('--opt-pinit', action='store_true', help='Also optimize P_init_diag (3rd param, MEKF only)')
@@ -279,7 +280,9 @@ def main():
                         choices=['opensim', 'optimized', 'olsson', 'pca_rotvec'],
                         help='Axis estimation method (default: opensim)')
     parser.add_argument('--baseline-only', action='store_true', help='Only print baseline RMSE table')
-    parser.add_argument('--workers', type=int, default=-1, help='Parallel workers for DE (-1=all CPUs, default: -1)')
+    parser.add_argument('--workers', type=int, default=-1, help='Parallel workers (-1=all CPUs, default: -1)')
+    parser.add_argument('--map-iterations', type=int, default=30,
+                        help='Gauss-Newton iterations for MAP-acc (default: 30)')
     args = parser.parse_args()
 
     os.chdir(PROJECT_ROOT)
@@ -307,7 +310,7 @@ def main():
     # Baseline
     if use_map:
         params_str = _format_params_map(BASELINE_COV_W, BASELINE_COV_I, BASELINE_COV_LNK, axis_method)
-        baseline_map = compute_rmse_map_map(datasets, BASELINE_COV_W, BASELINE_COV_I, BASELINE_COV_LNK, axis_method)
+        baseline_map = compute_rmse_map_map(datasets, BASELINE_COV_W, BASELINE_COV_I, BASELINE_COV_LNK, axis_method, iterations=args.map_iterations)
     else:
         params_str = _format_params_mekf(BASELINE_Q, BASELINE_R, BASELINE_P, axis_method)
         baseline_map = compute_rmse_map(datasets, BASELINE_Q, BASELINE_R, BASELINE_P, axis_method)
@@ -327,10 +330,10 @@ def main():
 
     def _run_and_print(ds, label_suffix=''):
         params, _ = run_optimization(ds, bounds, args.opt_pinit, axis_method,
-                                     args.maxiter, args.popsize, args.seed,
-                                     args.workers, args.estimator)
+                                     args.n_trials, args.seed, args.estimator,
+                                     args.workers, map_iterations=args.map_iterations)
         if use_map:
-            opt_map = compute_rmse_map_map(ds, params[0], params[1], params[2], axis_method)
+            opt_map = compute_rmse_map_map(ds, params[0], params[1], params[2], axis_method, iterations=args.map_iterations)
             ps = _format_params_map(params[0], params[1], params[2], axis_method)
         else:
             Q, R = params[0], params[1]

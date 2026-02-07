@@ -7,4 +7,5 @@ tqdm
 seaborn
 scipy
 dfjimu
+optuna
 git+https://github.com/simon-bachhuber/imt.git
