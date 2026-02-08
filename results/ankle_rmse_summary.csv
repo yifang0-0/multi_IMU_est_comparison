@@ -1,6 +1,6 @@
-subject,MADGWICK,MAHONY,VQF-IK,XSENS,kf_gframe_olsson,kf_gframe_opensim,kf_gframe_optimize,kf_gframe_pca,rnno+olsson,rnno_opensim,rnno_optimized,rnno_pca,vqf+olsson+heading_correction
-Subject02,11.83,12.70,4.14,15.25,25.43,6.97,5.64,10.27,25.56,7.67,5.72,13.83,77.61
-Subject03,11.07,12.87,18.53,5.73,20.81,8.41,8.92,31.75,22.70,6.22,6.10,25.49,33.93
-Subject04,7.64,10.86,4.46,5.76,46.83,7.80,4.78,17.91,48.25,7.68,6.27,18.62,52.79
-Subject08,5.29,6.74,3.11,7.91,15.26,5.05,5.12,26.73,14.62,5.04,4.82,32.67,38.56
-MEAN,8.95,10.79,7.56,8.66,27.08,7.06,6.12,21.67,27.78,6.65,5.73,22.66,50.72
+subject,MADGWICK,MAHONY,VQF-IK,XSENS,kf_gframe_model,kf_gframe_olsson,kf_gframe_opensim,kf_gframe_optimize,kf_gframe_pca,rnno+olsson,rnno_model,rnno_opensim,rnno_optimized,rnno_pca,vqf+olsson+heading_correction
+Subject02,11.83,12.70,4.14,15.25,5.49,25.43,6.97,5.64,10.27,25.56,5.29,7.67,5.72,13.83,77.61
+Subject03,11.07,12.87,18.53,5.73,13.96,20.81,8.41,8.92,31.75,22.70,19.12,6.22,6.10,25.49,33.93
+Subject04,7.64,10.86,4.46,5.76,7.71,46.83,7.80,4.78,17.91,48.25,8.34,7.68,6.27,18.62,52.79
+Subject08,5.29,6.74,3.11,7.91,5.04,15.26,5.05,5.12,26.73,14.62,4.62,5.04,4.82,32.67,38.56
+MEAN,8.95,10.79,7.56,8.66,8.05,27.08,7.06,6.12,21.67,27.78,9.34,6.65,5.73,22.66,50.72

@@ -560,7 +560,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__
     )
-    parser.add_argument('--joint', type=str, default='knee', choices=['knee', 'ankle'],
+    parser.add_argument('--joint', type=str, default='knee', choices=['knee', 'ankle', 'all'],
                         help='Joint to estimate (default: knee)')
     parser.add_argument('--method', type=str, default='all',
                         choices=['vqf_olsson', 'vqf_olsson_heading_correction',
@@ -580,11 +580,14 @@ def main():
 
     Path('plots').mkdir(exist_ok=True)
 
-    if args.subject == 'all':
-        results = run_all_subjects(args.joint, args.method, args.workers, args.export)
-        print_summary_table(results, args.joint)
-    else:
-        _ = run_single_subject(args.joint, args.method, args.subject, args.no_plot, args.export)
+    joints = ['knee', 'ankle'] if args.joint == 'all' else [args.joint]
+
+    for joint in joints:
+        if args.subject == 'all':
+            results = run_all_subjects(joint, args.method, args.workers, args.export)
+            print_summary_table(results, joint)
+        else:
+            _ = run_single_subject(joint, args.method, args.subject, args.no_plot, args.export)
 
 
 if __name__ == "__main__":
