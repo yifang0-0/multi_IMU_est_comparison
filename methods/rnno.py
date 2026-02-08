@@ -2,7 +2,7 @@
 import numpy as np
 from imt import methods as imt_methods
 
-from .shared import calculate_joint_angle
+from .shared import calculate_joint_angle, parse_osim_calibration, calculate_joint_angle_model
 from .axis import estimate_joint_axis
 
 
@@ -49,8 +49,11 @@ def run_rnno(
     axis_mode='olsson',        # 'olsson', 'optimize', or 'opensim'
     gt_angles=None,            # ground truth for 'optimize' mode (degrees)
     calib_samples=None,        # samples for axis optimization (default: full dataset)
-    joint=None,                # joint name for 'opensim' mode ('knee' or 'ankle')
+    joint=None,                # joint name for 'opensim'/'model' mode ('knee' or 'ankle')
     q_rel=None,                # pre-computed relative quaternion (skips RNNO)
+    model_path=None,           # path to calibrated .osim for 'model' mode
+    prox_imu=None,             # proximal IMU frame name for 'model' mode
+    dist_imu=None,             # distal IMU frame name for 'model' mode
 ):
     """Estimate joint angle using RNNO, returns (angle_deg, r1, r2, jhat, q_rel)."""
     # Ensure shape is (N, 3) for axis estimation
@@ -61,6 +64,17 @@ def run_rnno(
     # Compute orientation if not provided
     if q_rel is None:
         q_rel = compute_rnno_orientation(acc_prox, gyr_prox, acc_dist, gyr_dist, fs)
+
+    # Model-based angle calculation bypasses axis estimation entirely
+    if axis_mode == 'model':
+        joint_name = joint or 'knee_r'
+        if '_r' not in joint_name and '_l' not in joint_name:
+            joint_name += '_r'
+        calib = parse_osim_calibration(model_path, joint_name, prox_imu, dist_imu)
+        angle_deg = calculate_joint_angle_model(q_rel, calib)
+        jhat = calib['R_prox_proxIMU'].T @ calib['R_parent_offset'] @ calib['rot_axis']
+        jhat = jhat / np.linalg.norm(jhat)
+        return angle_deg, None, None, jhat, q_rel
 
     # Map legacy axis_mode names to unified method names
     method_map = {'optimize': 'optimized', 'pca_omega': 'pca_rotvec'}
@@ -85,7 +99,10 @@ def run_rnno_all_variants(
     fs,                   # sampling frequency in Hz (must be 100 Hz)
     gt_angles=None,       # ground truth for 'optimized' mode
     calib_samples=None,   # samples for optimization
-    joint=None,           # joint name for 'opensim' mode
+    joint=None,           # joint name for 'opensim'/'model' mode
+    model_path=None,      # path to calibrated .osim for 'model' mode
+    prox_imu=None,        # proximal IMU frame name for 'model' mode
+    dist_imu=None,        # distal IMU frame name for 'model' mode
 ):
     """Run all RNNO variants with shared orientation, returns dict of (angle_deg, jhat, q_rel)."""
     # Compute orientation once (expensive)
@@ -127,5 +144,14 @@ def run_rnno_all_variants(
         axis_mode='pca_omega', q_rel=q_rel
     )
     results['pca'] = (angle_deg, jhat, q_rel)
+
+    # Model (if calibrated model provided)
+    if model_path is not None and prox_imu is not None and dist_imu is not None:
+        joint_name = (joint or 'knee') + '_r'
+        calib = parse_osim_calibration(model_path, joint_name, prox_imu, dist_imu)
+        angle_deg = calculate_joint_angle_model(q_rel, calib)
+        jhat = calib['R_prox_proxIMU'].T @ calib['R_parent_offset'] @ calib['rot_axis']
+        jhat = jhat / np.linalg.norm(jhat)
+        results['model'] = (angle_deg, jhat, q_rel)
 
     return results

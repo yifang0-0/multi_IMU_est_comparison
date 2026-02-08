@@ -169,6 +169,16 @@ def process_vqf_olsson_heading_correction(data, errors_dict, angles_dict=None):
     _eval_method('vqf+olsson+heading_correction', angle_deg, data['gt'], errors_dict, angles_dict)
 
 
+def _find_calibrated_model(subject_path):
+    """Find a calibrated .osim model file for a subject, searching vqf first."""
+    imu_dir = subject_path / 'IMU'
+    for subdir in ('vqf', 'madgwick', 'mahony', 'xsens'):
+        candidate = imu_dir / subdir / 'model_Rajagopal2015_calibrated.osim'
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def process_kf_gframe(data, axis_mode, errors_dict, angles_dict=None):
     """Run KF_Gframe with specified axis mode."""
     print(f"\n=== KF_Gframe + {axis_mode} ===")
@@ -179,6 +189,15 @@ def process_kf_gframe(data, axis_mode, errors_dict, angles_dict=None):
         kwargs['gt_angles'] = data['gt']
     elif axis_mode == 'opensim':
         kwargs['joint'] = joint
+    elif axis_mode == 'model':
+        model_path = _find_calibrated_model(data['subject_path'])
+        if model_path is None:
+            print("No calibrated .osim model found, skipping model axis mode")
+            return
+        kwargs['joint'] = joint
+        kwargs['model_path'] = model_path
+        kwargs['prox_imu'] = data['joint_config']['proximal_sensor']
+        kwargs['dist_imu'] = data['joint_config']['distal_sensor']
 
     angle_deg, _, _, jhat, q_rel = run_kf_gframe(
         data['acc_prox'], data['gyr_prox'],
@@ -193,7 +212,7 @@ def process_kf_gframe(data, axis_mode, errors_dict, angles_dict=None):
         n = min(len(angle_deg), len(gt))
         if abs(np.corrcoef(angle_neg[:n], gt[:n])[0, 1]) > abs(np.corrcoef(angle_deg[:n], gt[:n])[0, 1]):
             angle_deg = angle_neg
-    elif axis_mode == 'opensim':
+    elif axis_mode in ('opensim', 'model'):
         print(f"Joint axis: [{jhat[0]:.3f}, {jhat[1]:.3f}, {jhat[2]:.3f}]")
 
     _eval_method(f'kf_gframe_{axis_mode}', angle_deg, data['gt'], errors_dict, angles_dict)
@@ -204,9 +223,20 @@ def process_kf_gframe_all(data, errors_dict, angles_dict=None):
     print("\n=== KF_Gframe (all variants, shared orientation) ===")
     joint = 'knee' if 'knee' in data['joint_config']['gt_column'] else 'ankle'
 
+    # Resolve model path for model variant
+    model_kwargs = {}
+    model_path = _find_calibrated_model(data['subject_path'])
+    if model_path is not None:
+        model_kwargs = {
+            'model_path': model_path,
+            'prox_imu': data['joint_config']['proximal_sensor'],
+            'dist_imu': data['joint_config']['distal_sensor'],
+        }
+
     results = run_kf_gframe_all_variants(
         data['acc_prox'], data['gyr_prox'], data['acc_dist'], data['gyr_dist'],
-        data['fs'], gt_angles=data['gt'], calib_samples=3000, joint=joint
+        data['fs'], gt_angles=data['gt'], calib_samples=3000, joint=joint,
+        **model_kwargs
     )
 
     gt = data['gt']
@@ -235,6 +265,12 @@ def process_kf_gframe_all(data, errors_dict, angles_dict=None):
     print(f"OpenSim joint axis: [{jhat[0]:.3f}, {jhat[1]:.3f}, {jhat[2]:.3f}]")
     _eval_method('kf_gframe_opensim', angle_deg, gt, errors_dict, angles_dict)
 
+    # Process model variant (if available)
+    if 'model' in results:
+        angle_deg, jhat, _ = results['model']
+        print(f"Model joint axis: [{jhat[0]:.3f}, {jhat[1]:.3f}, {jhat[2]:.3f}]")
+        _eval_method('kf_gframe_model', angle_deg, gt, errors_dict, angles_dict)
+
 
 def process_rnno(data, axis_mode, errors_dict, angles_dict=None):
     """Run RNNO with specified axis mode."""
@@ -246,6 +282,15 @@ def process_rnno(data, axis_mode, errors_dict, angles_dict=None):
         kwargs['gt_angles'] = data['gt']
     elif axis_mode == 'opensim':
         kwargs['joint'] = joint
+    elif axis_mode == 'model':
+        model_path = _find_calibrated_model(data['subject_path'])
+        if model_path is None:
+            print("No calibrated .osim model found, skipping model axis mode")
+            return
+        kwargs['joint'] = joint
+        kwargs['model_path'] = model_path
+        kwargs['prox_imu'] = data['joint_config']['proximal_sensor']
+        kwargs['dist_imu'] = data['joint_config']['distal_sensor']
 
     angle_deg, _, _, jhat, q_rel = run_rnno(
         data['acc_prox'], data['gyr_prox'],
@@ -262,7 +307,7 @@ def process_rnno(data, axis_mode, errors_dict, angles_dict=None):
             angle_deg = angle_neg
         method_name = 'rnno+olsson' if axis_mode == 'olsson' else 'rnno_pca'
     else:
-        if axis_mode == 'opensim':
+        if axis_mode in ('opensim', 'model'):
             print(f"Joint axis: [{jhat[0]:.3f}, {jhat[1]:.3f}, {jhat[2]:.3f}]")
         method_name = f'rnno_{axis_mode}'
 
@@ -274,9 +319,20 @@ def process_rnno_all(data, errors_dict, angles_dict=None):
     print("\n=== RNNO (all variants, shared orientation) ===")
     joint = 'knee' if 'knee' in data['joint_config']['gt_column'] else 'ankle'
 
+    # Resolve model path for model variant
+    model_kwargs = {}
+    model_path = _find_calibrated_model(data['subject_path'])
+    if model_path is not None:
+        model_kwargs = {
+            'model_path': model_path,
+            'prox_imu': data['joint_config']['proximal_sensor'],
+            'dist_imu': data['joint_config']['distal_sensor'],
+        }
+
     results = run_rnno_all_variants(
         data['acc_prox'], data['gyr_prox'], data['acc_dist'], data['gyr_dist'],
-        data['fs'], gt_angles=data['gt'], calib_samples=None, joint=joint
+        data['fs'], gt_angles=data['gt'], calib_samples=None, joint=joint,
+        **model_kwargs
     )
 
     # Process olsson variant (with axis sign correction)
@@ -303,6 +359,12 @@ def process_rnno_all(data, errors_dict, angles_dict=None):
     if abs(np.corrcoef(angle_neg[:n], gt[:n])[0, 1]) > abs(np.corrcoef(angle_deg[:n], gt[:n])[0, 1]):
         angle_deg = angle_neg
     _eval_method('rnno_pca', angle_deg, gt, errors_dict, angles_dict)
+
+    # Process model variant (if available)
+    if 'model' in results:
+        angle_deg, jhat, _ = results['model']
+        print(f"Model joint axis: [{jhat[0]:.3f}, {jhat[1]:.3f}, {jhat[2]:.3f}]")
+        _eval_method('rnno_model', angle_deg, gt, errors_dict, angles_dict)
 
 
 def process_opensense(
@@ -375,7 +437,8 @@ def run_single_subject(joint, method, subject_id, no_plot=True, export=False):
         process_kf_gframe_all(data, errors_dict, angles_dict)
     else:
         kf_modes = [('kf_gframe_olsson', 'olsson'), ('kf_gframe_optimized', 'optimize'),
-                    ('kf_gframe_pca', 'pca_omega'), ('kf_gframe_opensim', 'opensim')]
+                    ('kf_gframe_pca', 'pca_omega'), ('kf_gframe_opensim', 'opensim'),
+                    ('kf_gframe_model', 'model')]
         for method_name, axis_mode in kf_modes:
             if method == method_name:
                 process_kf_gframe(data, axis_mode, errors_dict, angles_dict)
@@ -403,6 +466,8 @@ def run_single_subject(joint, method, subject_id, no_plot=True, export=False):
         process_rnno(data, 'opensim', errors_dict, angles_dict)
     elif method == 'rnno_pca':
         process_rnno(data, 'pca_omega', errors_dict, angles_dict)
+    elif method == 'rnno_model':
+        process_rnno(data, 'model', errors_dict, angles_dict)
 
     # Export time series if requested
     if export and angles_dict:
@@ -500,8 +565,8 @@ def main():
     parser.add_argument('--method', type=str, default='all',
                         choices=['vqf_olsson', 'vqf_olsson_heading_correction',
                                  'opensense', 'kf_gframe_olsson', 'kf_gframe_optimized',
-                                 'kf_gframe_opensim', 'kf_gframe_pca', 'vqf_ik',
-                                 'rnno', 'rnno_olsson', 'rnno_optimized', 'rnno_opensim', 'rnno_pca', 'all'],
+                                 'kf_gframe_opensim', 'kf_gframe_pca', 'kf_gframe_model', 'vqf_ik',
+                                 'rnno', 'rnno_olsson', 'rnno_optimized', 'rnno_opensim', 'rnno_pca', 'rnno_model', 'all'],
                         help='Estimation method (default: all)')
     parser.add_argument('--subject', type=str, default='Subject08',
                         help='Subject ID or "all" for all valid subjects (default: Subject08)')
