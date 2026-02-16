@@ -8,7 +8,7 @@ METHODS = {
     'MADGWICK': 'Madgwick + IK',
     'VQF-IK': 'VQF + IK',
     'vqf+olsson+heading_correction': 'VQF + Olsson',
-    'kf_gframe_opensim': 'KF GFrame',
+    'kf_gframe_model': 'KF GFrame',
 }
 
 knee_df = pd.read_csv('results/knee_rmse_summary.csv', index_col='subject')

@@ -426,3 +426,123 @@ def read_orientations_sto(
     quaternions = {name: np.array(q) for name, q in quaternions.items()}
 
     return time, quaternions, data_rate
+
+
+# =============================================================================
+# Optical Marker Ground Truth
+# =============================================================================
+
+OPTICAL_JOINT_MARKERS = {
+    'knee': {
+        'prox': ('R.Femur_IMU_O', 'R.Femur_IMU_X', 'R.Femur_IMU_Y'),
+        'dist': ('R.Tibia_IMU_O', 'R.Tibia_IMU_X', 'R.Tibia_IMU_Y'),
+    },
+    'ankle': {
+        'prox': ('R.Tibia_IMU_O', 'R.Tibia_IMU_X', 'R.Tibia_IMU_Y'),
+        'dist': ('R.Foot_IMU_O', 'R.Foot_IMU_X', 'R.Foot_IMU_Y'),
+    },
+}
+
+
+def load_trc(
+    file_path,       # path to .trc file
+    markers=None,    # list of marker names to extract (None = all)
+):
+    """Load TRC marker data, returns (time, marker_dict) with positions in mm."""
+    with open(file_path, 'r') as f:
+        lines = f.readlines()
+
+    # Line 4 (index 3): marker names, tab-separated, each spans 3 columns
+    marker_names_raw = lines[3].strip().split('\t')
+    # First two entries are "Frame#" and "Time", then marker names with empty strings for extra columns
+    all_markers = []
+    for name in marker_names_raw[2:]:
+        if name.strip():
+            all_markers.append(name.strip())
+
+    # Parse data (line 7+ = index 6+)
+    data_rows = []
+    for line in lines[6:]:
+        line = line.strip()
+        if not line:
+            continue
+        data_rows.append([float(v) if v.strip() else np.nan for v in line.split('\t')])
+    data = np.array(data_rows)
+
+    time = data[:, 1]  # column 1 = time
+    coords = data[:, 2:]  # columns 2+ = marker XYZ triplets
+
+    # Build marker dict: each marker occupies 3 consecutive columns
+    marker_dict = {}
+    for i, name in enumerate(all_markers):
+        if markers is not None and name not in markers:
+            continue
+        col_start = i * 3
+        marker_dict[name] = coords[:, col_start:col_start + 3]
+
+    return time, marker_dict
+
+
+def orientation_from_marker_triad(
+    origin,    # (N, 3) marker_O positions
+    marker_x,  # (N, 3) marker_X positions
+    marker_y,  # (N, 3) marker_Y positions
+):
+    """Compute orientation quaternions from O/X/Y marker triad, returns (N, 4) w,x,y,z."""
+    N = origin.shape[0]
+
+    # Build local coordinate frame via Gram-Schmidt
+    x_raw = marker_x - origin
+    x_norm = np.linalg.norm(x_raw, axis=1, keepdims=True)
+    x = x_raw / x_norm  # (N, 3)
+
+    y_raw = marker_y - origin
+    z_raw = np.cross(x, y_raw)
+    z_norm = np.linalg.norm(z_raw, axis=1, keepdims=True)
+    z = z_raw / z_norm  # (N, 3)
+
+    y = np.cross(z, x)  # (N, 3) — orthonormal by construction
+
+    # Rotation matrix: columns are x, y, z basis vectors → (N, 3, 3)
+    R = np.stack([x, y, z], axis=-1)
+
+    # Handle NaN frames (any NaN in input markers → NaN quaternion)
+    has_nan = (
+        np.isnan(origin).any(axis=1)
+        | np.isnan(marker_x).any(axis=1)
+        | np.isnan(marker_y).any(axis=1)
+        | (x_norm.squeeze() < 1e-10)
+        | (z_norm.squeeze() < 1e-10)
+    )
+
+    quats = qmt.quatFromRotMat(R)  # (N, 4) w,x,y,z
+    quats[has_nan] = np.nan
+    return quats
+
+
+def compute_q_rel_optical(
+    trc_path,       # path to walking.trc
+    joint='knee',   # 'knee' or 'ankle'
+):
+    """Compute ground truth relative orientation from optical IMU markers, returns (N, 4)."""
+    config = OPTICAL_JOINT_MARKERS[joint]
+
+    # Collect all needed markers
+    needed = list(config['prox']) + list(config['dist'])
+    time, markers = load_trc(trc_path, markers=needed)
+
+    # Proximal and distal orientations
+    q_prox = orientation_from_marker_triad(
+        markers[config['prox'][0]],
+        markers[config['prox'][1]],
+        markers[config['prox'][2]],
+    )
+    q_dist = orientation_from_marker_triad(
+        markers[config['dist'][0]],
+        markers[config['dist'][1]],
+        markers[config['dist'][2]],
+    )
+
+    # Relative orientation: q_rel = inv(q_prox) * q_dist
+    q_rel = qmt.qmult(qmt.qinv(q_prox), q_dist)
+    return q_rel
