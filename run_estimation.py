@@ -26,7 +26,8 @@ from methods.shared import load_mot, calculate_joint_angle
 from methods import (
     run_vqf_olsson, run_vqf_olsson_heading_corrected,
     run_kf_gframe, run_kf_gframe_all_variants,
-    run_rnno, run_rnno_all_variants
+    run_rnno, run_rnno_all_variants,
+    run_seel
 )
 from methods.shared import calculate_joint_angle
 from plotting import plot_time_series_error, plot_error_comparison
@@ -367,6 +368,31 @@ def process_rnno_all(data, errors_dict, angles_dict=None):
         _eval_method('rnno_model', angle_deg, gt, errors_dict, angles_dict)
 
 
+def _align_seel_angle(angle_deg, gt):
+    """Pick sign and remove mean offset for Seel direct angle (which has no absolute reference)."""
+    n = min(len(angle_deg), len(gt))
+    a, g = angle_deg[:n], gt[:n]
+    # Pick sign with better correlation
+    if abs(np.corrcoef(-a, g)[0, 1]) > abs(np.corrcoef(a, g)[0, 1]):
+        angle_deg = -angle_deg
+        a = -a
+    # Remove mean offset (direct method has arbitrary zero point)
+    angle_deg = angle_deg - np.mean(a - g)
+    return angle_deg
+
+
+def process_seel(data, errors_dict, angles_dict=None):
+    """Run Seel direct angle estimation (complementary filter)."""
+    print("\n=== Seel Direct Angle Estimation ===")
+    angle_deg, *_ = run_seel(
+        data['acc_prox'], data['gyr_prox'],
+        data['acc_dist'], data['gyr_dist'],
+        data['fs']
+    )
+    angle_deg = _align_seel_angle(angle_deg, data['gt'])
+    _eval_method('seel', angle_deg, data['gt'], errors_dict, angles_dict)
+
+
 def process_opensense(
     data,              # prepared data dict from prepare_data()
     errors_dict,       # dict to store error arrays (modified in place)
@@ -469,6 +495,10 @@ def run_single_subject(joint, method, subject_id, no_plot=True, export=False):
     elif method == 'rnno_model':
         process_rnno(data, 'model', errors_dict, angles_dict)
 
+    # Seel direct angle estimation
+    if method in ('seel', 'all'):
+        process_seel(data, errors_dict, angles_dict)
+
     # Export time series if requested
     if export and angles_dict:
         export_time_series(subject_id, joint, angles_dict, data['fs'])
@@ -566,7 +596,8 @@ def main():
                         choices=['vqf_olsson', 'vqf_olsson_heading_correction',
                                  'opensense', 'kf_gframe_olsson', 'kf_gframe_optimized',
                                  'kf_gframe_opensim', 'kf_gframe_pca', 'kf_gframe_model', 'vqf_ik',
-                                 'rnno', 'rnno_olsson', 'rnno_optimized', 'rnno_opensim', 'rnno_pca', 'rnno_model', 'all'],
+                                 'rnno', 'rnno_olsson', 'rnno_optimized', 'rnno_opensim', 'rnno_pca', 'rnno_model',
+                                 'seel', 'all'],
                         help='Estimation method (default: all)')
     parser.add_argument('--subject', type=str, default='Subject08',
                         help='Subject ID or "all" for all valid subjects (default: Subject08)')
