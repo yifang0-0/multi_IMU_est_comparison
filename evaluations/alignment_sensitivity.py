@@ -74,7 +74,7 @@ def collect_methods(joint, subject, data):
     for key, name in [('olsson', 'kf_gframe_olsson'), ('pca', 'kf_gframe_pca')]:
         angle_deg, jhat, q_rel = kf[key]
         pairs.append((name, fix_axis_sign(angle_deg, jhat, q_rel, gt), gt))
-    for key, name in [('optimized', 'kf_gframe_optimize'), ('opensim', 'kf_gframe_opensim')]:
+    for key, name in [('optimized', 'kf_gframe_optimize')]:
         if key in kf:
             pairs.append((name, kf[key][0], gt))
     if 'model' in kf:
@@ -90,7 +90,7 @@ def collect_methods(joint, subject, data):
             if key in rnno:
                 angle_deg, jhat, q_rel = rnno[key]
                 pairs.append((name, fix_axis_sign(angle_deg, jhat, q_rel, gt), gt))
-        for key, name in [('optimized', 'rnno_optimized'), ('opensim', 'rnno_opensim')]:
+        for key, name in [('optimized', 'rnno_optimized')]:
             if key in rnno:
                 pairs.append((name, rnno[key][0], gt))
         if 'model' in rnno:

@@ -4,7 +4,7 @@ import qmt
 
 from dfjimu.mekf_acc import mekf_acc
 from dfjimu import estimate_lever_arms
-from .shared import calculate_joint_angle, parse_osim_calibration, calculate_joint_angle_model
+from .shared import calculate_joint_angle, parse_osim_calibration
 from .axis import estimate_joint_axis
 
 # Noise parameters matching the original process_orientation_KF_Gframe
@@ -13,6 +13,19 @@ _R_DIAG = 2.0 * 0.35**2 * 10           # measurement noise (2 * cov_lnk_scale)
 _P_INIT_DIAG = 1.0                      # initial covariance diagonal
 
 
+def _pre_align_imu(acc, gyr, R_body_to_imu):
+    """Rotate IMU data from sensor frame to body frame."""
+    return acc @ R_body_to_imu.T, gyr @ R_body_to_imu.T
+
+
+def _model_joint_angle(q_rel, calib):
+    """Calculate joint angle from body-frame q_rel using offset-frame chain (no R_s2b)."""
+    A = calib['R_parent_offset'].T
+    B = calib['R_child_offset']
+    R_rel = qmt.quatToRotMat(q_rel)
+    R_joint = np.einsum('ij,njk,kl->nil', A, R_rel, B)
+    q_joint = qmt.quatFromRotMat(R_joint)
+    return np.degrees(qmt.quatProject(q_joint, calib['rot_axis'])['projAngle'])
 
 
 def run_kf_gframe(
@@ -23,11 +36,11 @@ def run_kf_gframe(
     fs,                # sampling frequency in Hz
     r1=None,           # lever arm 1, auto-estimated if None
     r2=None,           # lever arm 2, auto-estimated if None
-    axis_mode='fixed',    # 'fixed', 'olsson', 'optimize', 'opensim', or 'model'
+    axis_mode='fixed',    # 'fixed', 'olsson', 'optimize', or 'model'
     euler_axes='zyx',     # Euler axes for 'fixed' mode
     gt_angles=None,       # ground truth for 'optimize' mode (degrees)
     calib_samples=3000,   # samples for axis optimization
-    joint=None,           # 'knee' or 'ankle' for 'opensim' mode
+    joint=None,           # 'knee' or 'ankle' for 'model' mode
     model_path=None,      # path to calibrated .osim for 'model' mode
     prox_imu=None,        # proximal IMU frame name for 'model' mode
     dist_imu=None,        # distal IMU frame name for 'model' mode
@@ -38,27 +51,35 @@ def run_kf_gframe(
         acc_prox, gyr_prox = acc_prox.T, gyr_prox.T
         acc_dist, gyr_dist = acc_dist.T, gyr_dist.T
 
+    # Pre-align IMU data to body frame if calibration available
+    calib = None
+    if model_path is not None and prox_imu is not None and dist_imu is not None:
+        joint_name = joint or 'knee_r'
+        if '_r' not in joint_name and '_l' not in joint_name:
+            joint_name += '_r'
+        calib = parse_osim_calibration(model_path, joint_name, prox_imu, dist_imu)
+        acc_prox, gyr_prox = _pre_align_imu(acc_prox, gyr_prox, calib['R_prox_proxIMU'])
+        acc_dist, gyr_dist = _pre_align_imu(acc_dist, gyr_dist, calib['R_dist_distIMU'])
+
     # Estimate lever arms if not provided
     if r1 is None or r2 is None:
         r1, r2 = estimate_lever_arms(gyr_prox, gyr_dist, acc_prox, acc_dist, fs)
 
-    # Run MEKF-acc
+    # Run MEKF-acc (in body frame if pre-aligned)
     q1_all, q2_all = mekf_acc(
         gyr_prox, gyr_dist, acc_prox, acc_dist, r1, r2, fs,
         np.array([1.0, 0, 0, 0]), _Q_COV, _R_DIAG, _P_INIT_DIAG,
     )
 
-    # Compute relative quaternion
+    # Compute relative quaternion (in body frame if pre-aligned)
     q_rel = qmt.qmult(qmt.qinv(q1_all), q2_all)
 
-    # Model-based angle calculation bypasses axis estimation entirely
+    # Model-based angle calculation (data already pre-aligned to body frame)
     if axis_mode == 'model':
-        joint_name = joint or 'knee_r'
-        if '_r' not in joint_name and '_l' not in joint_name:
-            joint_name += '_r'
-        calib = parse_osim_calibration(model_path, joint_name, prox_imu, dist_imu)
-        angle_deg = calculate_joint_angle_model(q_rel, calib)
-        jhat = calib['R_prox_proxIMU'].T @ calib['R_parent_offset'] @ calib['rot_axis']
+        if calib is None:
+            raise ValueError("model axis_mode requires model_path, prox_imu, and dist_imu")
+        angle_deg = _model_joint_angle(q_rel, calib)
+        jhat = calib['R_parent_offset'] @ calib['rot_axis']
         jhat = jhat / np.linalg.norm(jhat)
         return angle_deg, r1, r2, jhat, q_rel
 
@@ -93,7 +114,7 @@ def run_kf_gframe_all_variants(
     r2=None,              # lever arm 2, auto-estimated if None
     gt_angles=None,       # ground truth for 'optimized' mode
     calib_samples=3000,   # samples for optimization
-    joint=None,           # joint name for 'opensim' mode
+    joint=None,           # joint name for 'model' variant
     model_path=None,      # path to calibrated .osim for 'model' variant
     prox_imu=None,        # proximal IMU frame name for 'model' variant
     dist_imu=None,        # distal IMU frame name for 'model' variant
@@ -104,17 +125,25 @@ def run_kf_gframe_all_variants(
         acc_prox, gyr_prox = acc_prox.T, gyr_prox.T
         acc_dist, gyr_dist = acc_dist.T, gyr_dist.T
 
+    # Pre-align IMU data to body frame if calibration available
+    calib = None
+    if model_path is not None and prox_imu is not None and dist_imu is not None:
+        joint_name = (joint or 'knee') + '_r'
+        calib = parse_osim_calibration(model_path, joint_name, prox_imu, dist_imu)
+        acc_prox, gyr_prox = _pre_align_imu(acc_prox, gyr_prox, calib['R_prox_proxIMU'])
+        acc_dist, gyr_dist = _pre_align_imu(acc_dist, gyr_dist, calib['R_dist_distIMU'])
+
     # Estimate lever arms once
     if r1 is None or r2 is None:
         r1, r2 = estimate_lever_arms(gyr_prox, gyr_dist, acc_prox, acc_dist, fs)
 
-    # Run MEKF-acc once (expensive)
+    # Run MEKF-acc once (in body frame if pre-aligned)
     q1_all, q2_all = mekf_acc(
         gyr_prox, gyr_dist, acc_prox, acc_dist, r1, r2, fs,
         np.array([1.0, 0, 0, 0]), _Q_COV, _R_DIAG, _P_INIT_DIAG,
     )
 
-    # Compute relative quaternion once
+    # Compute relative quaternion once (in body frame if pre-aligned)
     q_rel = qmt.qmult(qmt.qinv(q1_all), q2_all)
 
     results = {}
@@ -144,18 +173,10 @@ def run_kf_gframe_all_variants(
     angle_deg = calculate_joint_angle(q_rel, jhat)
     results['pca'] = (angle_deg, jhat, q_rel)
 
-    # OpenSim (if joint provided)
-    if joint is not None:
-        jhat = estimate_joint_axis(q_rel, axis_method='opensim', joint=joint, correct_sign=True)
-        angle_deg = calculate_joint_angle(q_rel, jhat)
-        results['opensim'] = (angle_deg, jhat, q_rel)
-
-    # Model-based (if model_path provided)
-    if model_path is not None and prox_imu is not None and dist_imu is not None:
-        joint_name = (joint or 'knee') + '_r'
-        calib = parse_osim_calibration(model_path, joint_name, prox_imu, dist_imu)
-        angle_deg = calculate_joint_angle_model(q_rel, calib)
-        jhat = calib['R_prox_proxIMU'].T @ calib['R_parent_offset'] @ calib['rot_axis']
+    # Model-based (data already pre-aligned to body frame)
+    if calib is not None:
+        angle_deg = _model_joint_angle(q_rel, calib)
+        jhat = calib['R_parent_offset'] @ calib['rot_axis']
         jhat = jhat / np.linalg.norm(jhat)
         results['model'] = (angle_deg, jhat, q_rel)
 

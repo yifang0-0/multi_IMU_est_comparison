@@ -188,8 +188,6 @@ def process_kf_gframe(data, axis_mode, errors_dict, angles_dict=None):
     kwargs = {'axis_mode': axis_mode}
     if axis_mode == 'optimize':
         kwargs['gt_angles'] = data['gt']
-    elif axis_mode == 'opensim':
-        kwargs['joint'] = joint
     elif axis_mode == 'model':
         model_path = _find_calibrated_model(data['subject_path'])
         if model_path is None:
@@ -213,7 +211,7 @@ def process_kf_gframe(data, axis_mode, errors_dict, angles_dict=None):
         n = min(len(angle_deg), len(gt))
         if abs(np.corrcoef(angle_neg[:n], gt[:n])[0, 1]) > abs(np.corrcoef(angle_deg[:n], gt[:n])[0, 1]):
             angle_deg = angle_neg
-    elif axis_mode in ('opensim', 'model'):
+    elif axis_mode == 'model':
         print(f"Joint axis: [{jhat[0]:.3f}, {jhat[1]:.3f}, {jhat[2]:.3f}]")
 
     _eval_method(f'kf_gframe_{axis_mode}', angle_deg, data['gt'], errors_dict, angles_dict)
@@ -261,11 +259,6 @@ def process_kf_gframe_all(data, errors_dict, angles_dict=None):
         angle_deg = angle_neg
     _eval_method('kf_gframe_pca', angle_deg, gt, errors_dict, angles_dict)
 
-    # Process opensim variant
-    angle_deg, jhat, _ = results['opensim']
-    print(f"OpenSim joint axis: [{jhat[0]:.3f}, {jhat[1]:.3f}, {jhat[2]:.3f}]")
-    _eval_method('kf_gframe_opensim', angle_deg, gt, errors_dict, angles_dict)
-
     # Process model variant (if available)
     if 'model' in results:
         angle_deg, jhat, _ = results['model']
@@ -281,8 +274,6 @@ def process_rnno(data, axis_mode, errors_dict, angles_dict=None):
     kwargs = {'axis_mode': axis_mode}
     if axis_mode == 'optimize':
         kwargs['gt_angles'] = data['gt']
-    elif axis_mode == 'opensim':
-        kwargs['joint'] = joint
     elif axis_mode == 'model':
         model_path = _find_calibrated_model(data['subject_path'])
         if model_path is None:
@@ -308,7 +299,7 @@ def process_rnno(data, axis_mode, errors_dict, angles_dict=None):
             angle_deg = angle_neg
         method_name = 'rnno+olsson' if axis_mode == 'olsson' else 'rnno_pca'
     else:
-        if axis_mode in ('opensim', 'model'):
+        if axis_mode == 'model':
             print(f"Joint axis: [{jhat[0]:.3f}, {jhat[1]:.3f}, {jhat[2]:.3f}]")
         method_name = f'rnno_{axis_mode}'
 
@@ -348,11 +339,6 @@ def process_rnno_all(data, errors_dict, angles_dict=None):
     # Process optimized variant
     angle_deg, jhat, _ = results['optimized']
     _eval_method('rnno_optimized', angle_deg, gt, errors_dict, angles_dict)
-
-    # Process opensim variant
-    angle_deg, jhat, _ = results['opensim']
-    print(f"OpenSim joint axis: [{jhat[0]:.3f}, {jhat[1]:.3f}, {jhat[2]:.3f}]")
-    _eval_method('rnno_opensim', angle_deg, gt, errors_dict, angles_dict)
 
     # Process PCA variant (with axis sign correction)
     angle_deg, jhat, q_rel = results['pca']
@@ -463,8 +449,7 @@ def run_single_subject(joint, method, subject_id, no_plot=True, export=False):
         process_kf_gframe_all(data, errors_dict, angles_dict)
     else:
         kf_modes = [('kf_gframe_olsson', 'olsson'), ('kf_gframe_optimized', 'optimize'),
-                    ('kf_gframe_pca', 'pca_omega'), ('kf_gframe_opensim', 'opensim'),
-                    ('kf_gframe_model', 'model')]
+                    ('kf_gframe_pca', 'pca_omega'), ('kf_gframe_model', 'model')]
         for method_name, axis_mode in kf_modes:
             if method == method_name:
                 process_kf_gframe(data, axis_mode, errors_dict, angles_dict)
@@ -488,8 +473,6 @@ def run_single_subject(joint, method, subject_id, no_plot=True, export=False):
         process_rnno(data, 'olsson', errors_dict, angles_dict)
     elif method == 'rnno_optimized':
         process_rnno(data, 'optimize', errors_dict, angles_dict)
-    elif method == 'rnno_opensim':
-        process_rnno(data, 'opensim', errors_dict, angles_dict)
     elif method == 'rnno_pca':
         process_rnno(data, 'pca_omega', errors_dict, angles_dict)
     elif method == 'rnno_model':
@@ -595,8 +578,8 @@ def main():
     parser.add_argument('--method', type=str, default='all',
                         choices=['vqf_olsson', 'vqf_olsson_heading_correction',
                                  'opensense', 'kf_gframe_olsson', 'kf_gframe_optimized',
-                                 'kf_gframe_opensim', 'kf_gframe_pca', 'kf_gframe_model', 'vqf_ik',
-                                 'rnno', 'rnno_olsson', 'rnno_optimized', 'rnno_opensim', 'rnno_pca', 'rnno_model',
+                                 'kf_gframe_pca', 'kf_gframe_model', 'vqf_ik',
+                                 'rnno', 'rnno_olsson', 'rnno_optimized', 'rnno_pca', 'rnno_model',
                                  'seel', 'all'],
                         help='Estimation method (default: all)')
     parser.add_argument('--subject', type=str, default='Subject08',

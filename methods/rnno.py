@@ -46,10 +46,10 @@ def run_rnno(
     acc_dist,                  # distal accelerometer (N, 3) or (3, N)
     gyr_dist,                  # distal gyroscope (N, 3) or (3, N)
     fs,                        # sampling frequency in Hz (must be 100 Hz)
-    axis_mode='olsson',        # 'olsson', 'optimize', or 'opensim'
+    axis_mode='olsson',        # 'olsson', 'optimize', or 'model'
     gt_angles=None,            # ground truth for 'optimize' mode (degrees)
     calib_samples=None,        # samples for axis optimization (default: full dataset)
-    joint=None,                # joint name for 'opensim'/'model' mode ('knee' or 'ankle')
+    joint=None,                # joint name for 'model' mode ('knee' or 'ankle')
     q_rel=None,                # pre-computed relative quaternion (skips RNNO)
     model_path=None,           # path to calibrated .osim for 'model' mode
     prox_imu=None,             # proximal IMU frame name for 'model' mode
@@ -99,7 +99,7 @@ def run_rnno_all_variants(
     fs,                   # sampling frequency in Hz (must be 100 Hz)
     gt_angles=None,       # ground truth for 'optimized' mode
     calib_samples=None,   # samples for optimization
-    joint=None,           # joint name for 'opensim'/'model' mode
+    joint=None,           # joint name for 'model' mode
     model_path=None,      # path to calibrated .osim for 'model' mode
     prox_imu=None,        # proximal IMU frame name for 'model' mode
     dist_imu=None,        # distal IMU frame name for 'model' mode
@@ -129,14 +129,6 @@ def run_rnno_all_variants(
             axis_mode='optimize', gt_angles=gt_angles, calib_samples=calib_samples, q_rel=q_rel
         )
         results['optimized'] = (angle_deg, jhat, q_rel)
-
-    # OpenSim (if joint provided)
-    if joint is not None:
-        angle_deg, _, _, jhat, _ = run_rnno(
-            acc_prox, gyr_prox, acc_dist, gyr_dist, fs,
-            axis_mode='opensim', joint=joint, q_rel=q_rel
-        )
-        results['opensim'] = (angle_deg, jhat, q_rel)
 
     # PCA (always computed, requires only q_rel)
     angle_deg, _, _, jhat, _ = run_rnno(

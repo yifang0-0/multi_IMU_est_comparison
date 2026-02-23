@@ -54,7 +54,7 @@ def precompute_datasets():
     return datasets
 
 
-def evaluate_single(ds, Q_cov, R_diag, P_init_diag=1.0, axis_method='opensim'):
+def evaluate_single(ds, Q_cov, R_diag, P_init_diag=1.0, axis_method='olsson'):
     """Run MEKF + axis estimation on one dataset, return RMSE in degrees."""
     q_init = np.array([1.0, 0, 0, 0], dtype=np.float64)
     Q_arr = np.ones(6, dtype=np.float64) * Q_cov
@@ -69,8 +69,9 @@ def evaluate_single(ds, Q_cov, R_diag, P_init_diag=1.0, axis_method='opensim'):
     axis_kwargs = {'correct_sign': True}
     if axis_method == 'optimized':
         axis_kwargs.update(gt_angles=ds['gt'], calib_samples=3000)
-    elif axis_method == 'opensim':
-        axis_kwargs['joint'] = ds['joint']
+    if axis_method == 'olsson':
+        axis_kwargs.update(acc_prox=ds['acc1'], gyr_prox=ds['gyr1'],
+                           acc_dist=ds['acc2'], gyr_dist=ds['gyr2'])
 
     jhat = estimate_joint_axis(q_rel, axis_method=axis_method, **axis_kwargs)
     angle_deg = calculate_joint_angle(q_rel, jhat)
@@ -80,7 +81,7 @@ def evaluate_single(ds, Q_cov, R_diag, P_init_diag=1.0, axis_method='opensim'):
     return rmse
 
 
-def evaluate_single_map(ds, cov_w_scale, cov_i_scale, cov_lnk_scale, axis_method='opensim', iterations=10):
+def evaluate_single_map(ds, cov_w_scale, cov_i_scale, cov_lnk_scale, axis_method='olsson', iterations=10):
     """Run MAP-acc + axis estimation on one dataset, return RMSE in degrees."""
     q1, q2 = map_acc(
         ds['gyr1'], ds['gyr2'], ds['acc1'], ds['acc2'],
@@ -97,8 +98,9 @@ def evaluate_single_map(ds, cov_w_scale, cov_i_scale, cov_lnk_scale, axis_method
     axis_kwargs = {'correct_sign': True}
     if axis_method == 'optimized':
         axis_kwargs.update(gt_angles=ds['gt'], calib_samples=3000)
-    elif axis_method == 'opensim':
-        axis_kwargs['joint'] = ds['joint']
+    if axis_method == 'olsson':
+        axis_kwargs.update(acc_prox=ds['acc1'], gyr_prox=ds['gyr1'],
+                           acc_dist=ds['acc2'], gyr_dist=ds['gyr2'])
 
     jhat = estimate_joint_axis(q_rel, axis_method=axis_method, **axis_kwargs)
     angle_deg = calculate_joint_angle(q_rel, jhat)
@@ -121,7 +123,7 @@ def _eval_single_wrapper(args):
         return 50.0  # penalty
 
 
-def make_objective(datasets, bounds, opt_pinit=False, axis_method='opensim',
+def make_objective(datasets, bounds, opt_pinit=False, axis_method='olsson',
                    estimator='mekf', pool=None, map_iterations=10):
     """Return an Optuna objective closure over the given datasets and settings."""
     def objective(trial):
@@ -150,7 +152,7 @@ def make_objective(datasets, bounds, opt_pinit=False, axis_method='opensim',
     return objective
 
 
-def compute_rmse_map(datasets, Q_cov, R_diag, P_init_diag=1.0, axis_method='opensim'):
+def compute_rmse_map(datasets, Q_cov, R_diag, P_init_diag=1.0, axis_method='olsson'):
     """Evaluate all MEKF datasets and return {(subject, joint): rmse} map."""
     return {
         (ds['subject'], ds['joint']): evaluate_single(ds, Q_cov, R_diag, P_init_diag, axis_method)
@@ -158,7 +160,7 @@ def compute_rmse_map(datasets, Q_cov, R_diag, P_init_diag=1.0, axis_method='open
     }
 
 
-def compute_rmse_map_map(datasets, cov_w_scale, cov_i_scale, cov_lnk_scale, axis_method='opensim', iterations=10):
+def compute_rmse_map_map(datasets, cov_w_scale, cov_i_scale, cov_lnk_scale, axis_method='olsson', iterations=10):
     """Evaluate all MAP-acc datasets and return {(subject, joint): rmse} map."""
     return {
         (ds['subject'], ds['joint']): evaluate_single_map(ds, cov_w_scale, cov_i_scale, cov_lnk_scale, axis_method, iterations=iterations)
@@ -201,7 +203,7 @@ def print_rmse_table(rmse_map, label='', params_str=''):
     return np.mean(all_vals)
 
 
-def run_optimization(datasets, bounds, opt_pinit=False, axis_method='opensim',
+def run_optimization(datasets, bounds, opt_pinit=False, axis_method='olsson',
                      n_trials=200, seed=42, estimator='mekf', workers=-1, map_iterations=10):
     """Run Optuna TPE optimization and return best parameters."""
     t0 = time.time()
@@ -276,9 +278,9 @@ def main():
     parser.add_argument('--seed', type=int, default=42, help='Random seed (default: 42)')
     parser.add_argument('--per-joint', action='store_true', help='Optimize per-joint separately')
     parser.add_argument('--opt-pinit', action='store_true', help='Also optimize P_init_diag (3rd param, MEKF only)')
-    parser.add_argument('--axis-method', type=str, default='opensim',
-                        choices=['opensim', 'optimized', 'olsson', 'pca_rotvec'],
-                        help='Axis estimation method (default: opensim)')
+    parser.add_argument('--axis-method', type=str, default='olsson',
+                        choices=['optimized', 'olsson', 'pca_rotvec'],
+                        help='Axis estimation method (default: olsson)')
     parser.add_argument('--baseline-only', action='store_true', help='Only print baseline RMSE table')
     parser.add_argument('--workers', type=int, default=-1, help='Parallel workers (-1=all CPUs, default: -1)')
     parser.add_argument('--map-iterations', type=int, default=30,

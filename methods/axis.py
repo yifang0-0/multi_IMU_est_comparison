@@ -5,11 +5,6 @@ from scipy.optimize import minimize
 from constants import FS
 from .shared import olsson_estimate_hinge_joint_axes, calculate_joint_angle
 
-OPENSIM_JOINT_AXES = {
-    'knee': np.array([0, 0, 1]),
-    'ankle': np.array([-0.6, -0.3, -0.75]),
-}
-
 AXIS_METHODS = {}
 
 
@@ -46,7 +41,7 @@ def estimate_joint_axis(
     acc_dist=None,      # distal accelerometer (N, 3)
     gyr_dist=None,      # distal gyroscope (N, 3)
     correct_sign=True,  # flip axis to maximize correlation with gt_angles
-    joint=None,         # 'knee' or 'ankle' for opensim method
+    joint=None,         # 'knee' or 'ankle'
     **kwargs,
 ):
     """Returns normalized joint axis vector (3,)."""
@@ -120,14 +115,6 @@ def _axis_optimized(
         jhat = -jhat
 
     return jhat
-
-
-@register_axis_method('opensim')
-def _axis_opensim(joint='knee', **kwargs):
-    """Return hardcoded OpenSim joint axis."""
-    if joint is None or joint not in OPENSIM_JOINT_AXES:
-        raise ValueError(f"Unknown joint: {joint}. Available: {list(OPENSIM_JOINT_AXES.keys())}")
-    return OPENSIM_JOINT_AXES[joint].copy()
 
 
 @register_axis_method('fixed')

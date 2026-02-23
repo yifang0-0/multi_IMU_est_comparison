@@ -5,7 +5,7 @@ from .rnno import run_rnno, compute_rnno_orientation, run_rnno_all_variants
 from .seel import run_seel
 from .axis import (
     estimate_joint_axis, register_axis_method, get_axis_method, list_axis_methods,
-    AXIS_METHODS, OPENSIM_JOINT_AXES
+    AXIS_METHODS,
 )
 
 __all__ = [
@@ -19,5 +19,5 @@ __all__ = [
     'run_seel',
     # Axis estimation API
     'estimate_joint_axis', 'register_axis_method', 'get_axis_method', 'list_axis_methods',
-    'AXIS_METHODS', 'OPENSIM_JOINT_AXES',
+    'AXIS_METHODS',
 ]

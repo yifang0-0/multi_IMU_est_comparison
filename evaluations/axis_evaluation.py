@@ -16,7 +16,7 @@ from dfjimu import estimate_lever_arms
 from dfjimu.mekf_acc import mekf_acc
 from methods.rnno import compute_rnno_orientation
 from methods.shared import calculate_joint_angle
-from methods.axis import AXIS_METHODS, OPENSIM_JOINT_AXES
+from methods.axis import AXIS_METHODS
 from constants import VALID_SUBJECTS
 
 CACHE_DIR = Path('cache/orientations')
